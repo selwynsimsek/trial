@@ -22,7 +22,8 @@
                  for offset = (base-offset slot) then (+ offset (base-allocation type :std140 0))
                  do (setf (aref vector i) (make-instance (second type)
                                                          :storage-ptr storage-ptr
-                                                         :base-offset offset)))
+                                                         :base-offset offset))
+                 finally (return vector))
            (make-instance 'gl-vector
                           :storage-ptr storage-ptr
                           :base-offset (base-offset slot)
@@ -37,7 +38,7 @@
   (loop for slot in (c2mop:class-slots (class-of struct))
         when (and (typep slot 'gl-struct-effective-slot)
                   (not (typep slot 'gl-struct-immediate-slot)))
-        do (setf (slot-value slot (c2mop:slot-definition-name slot))
+        do (setf (slot-value struct (c2mop:slot-definition-name slot))
                  (compound-struct-slot-initform slot (storage-ptr struct)))))
 
 (defmethod compute-dependant-types ((struct gl-struct))
@@ -231,6 +232,10 @@
 
 (defmethod initialize-instance :after ((vector gl-vector) &key base-offset)
   (when base-offset (cffi:incf-pointer (storage-ptr vector) base-offset)))
+
+(defmethod print-object ((vector gl-vector) stream)
+  (print-unreadable-object (vector stream :type T :identity T)
+    (format stream "~s ~s" (element-type vector) (length vector))))
 
 #+sbcl
 (defmethod sb-sequence:elt ((vector gl-vector) index)

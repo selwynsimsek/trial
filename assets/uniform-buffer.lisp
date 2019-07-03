@@ -146,25 +146,3 @@
     (unless offset
       (error "Field ~s not found in ~a." field buffer))
     (update-buffer-data buffer value :buffer-start offset)))
-
-(defun gl-memref (ptr type)
-  (etypecase type
-    (symbol
-     (ecase type
-       ;; FIXME: stride and layout of matrices is dependant on layout used!
-       (:int (cffi:mem-ref ptr :int))
-       (:uint (cffi:mem-ref ptr :uint))
-       (:float (cffi:mem-ref ptr :float))
-       (:double (cffi:mem-ref ptr :double))
-       (:vec2 (vec2 (cffi:mem-aref ptr :float 0)
-                    (cffi:mem-aref ptr :float 1)))
-       (:vec3 (vec3 (cffi:mem-aref ptr :float 0)
-                    (cffi:mem-aref ptr :float 1)
-                    (cffi:mem-aref ptr :float 2)))
-       (:vec4 (vec4 (cffi:mem-aref ptr :float 0)
-                    (cffi:mem-aref ptr :float 1)
-                    (cffi:mem-aref ptr :float 2)
-                    (cffi:mem-aref ptr :float 3)))))
-    (cons
-     ;; TODO: this
-     (error "Cannot handle compound types at this point."))))

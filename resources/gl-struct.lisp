@@ -9,6 +9,8 @@
 (defclass gl-struct ()
   ((storage-ptr :initarg :storage-ptr :accessor storage-ptr)))
 
+;;; FIXME: Allow specifying different layout standards
+
 (defun compound-struct-slot-initform (slot storage-ptr)
   (case (first (gl-type slot))
     (:struct
@@ -18,8 +20,9 @@
        (declare (ignore identifier))
        (if (listp type)
            (loop with vector = (make-array count)
+                 with size = (buffer-field-stride (second type) :std140)
                  for i from 0 below count
-                 for offset = (base-offset slot) then (+ offset (base-allocation type :std140 0))
+                 for offset = (base-offset slot) then (+ offset size)
                  do (setf (aref vector i) (make-instance (second type)
                                                          :storage-ptr storage-ptr
                                                          :base-offset offset))
@@ -29,8 +32,7 @@
                           :base-offset (base-offset slot)
                           :element-type type
                           :element-count count
-                          ;; FIXME: handle stride
-                          :stride 16))))))
+                          :stride (buffer-field-stride type :std140)))))))
 
 (defmethod initialize-instance :after ((struct gl-struct) &key base-offset)
   (when base-offset (cffi:incf-pointer (storage-ptr struct) base-offset))
@@ -86,7 +88,7 @@
     ;; Compute discrete slot offsets.
     (loop for slot in slots
           when (typep slot 'gl-struct-slot)
-          do (let ((size (base-allocation (gl-type slot) :std140 offset)))
+          do (let ((size (buffer-field-size (gl-type slot) :std140)))
                (setf (slot-value slot 'base-offset) offset)
                (incf offset size)))
     slots))

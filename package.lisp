@@ -60,7 +60,7 @@
    #:gl-type
    #:qualifiers
    #:layout
-   #:compute-dependant-types
+   #:compute-dependent-types
    #:gl-source
    #:gl-struct-field
    #:array-size

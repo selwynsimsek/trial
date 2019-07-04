@@ -35,7 +35,7 @@
 
 (define-constant-fold-function gl-type->cl-type (type)
   (ecase type
-    ((:boolean :ubyte :unsigned-byte :unsigned-char) '(unsigned-byte 8))
+    ((:boolean :bool :ubyte :unsigned-byte :unsigned-char) '(unsigned-byte 8))
     ((:byte :char) '(signed-byte 8))
     ((:ushort :unsigned-short) '(unsigned-byte 16))
     (:short '(signed-byte 16))
@@ -130,9 +130,9 @@
     (:mat3 (* 3 3 4))
     (:mat4 (* 4 44))))
 
-(defgeneric buffer-field-base (type standard))
-(defgeneric buffer-field-size (type standard base))
-(defgeneric buffer-field-stride (type standard))
+(defgeneric buffer-field-base (type standard)
+  (:method ((type symbol) standard)
+    (buffer-field-base (find-class type) standard)))
 
 (defmethod buffer-field-base ((type (eql :int)) (standard (eql :std140))) 4)
 (defmethod buffer-field-base ((type (eql :bool)) (standard (eql :std140))) 4)
@@ -144,6 +144,10 @@
 (defmethod buffer-field-base ((type (eql :mat3)) (standard (eql :std140))) (buffer-field-base :vec4 standard))
 (defmethod buffer-field-base ((type (eql :mat4)) (standard (eql :std140))) (buffer-field-base :vec4 standard))
 (defmethod buffer-field-base ((type cons) (standard (eql :std140))) (buffer-field-base :vec4 standard))
+
+(defgeneric buffer-field-size (type standard base)
+  (:method ((type symbol) standard base)
+    (buffer-field-size (find-class type) standard base)))
 
 (defmethod buffer-field-size ((type (eql :int)) (standard (eql :std140)) base) 4)
 (defmethod buffer-field-size ((type (eql :bool)) (standard (eql :std140)) base) 4)
@@ -160,11 +164,15 @@
     (:array (destructuring-bind (identifier type count) type
               (declare (ignore identifier))
               (if (listp type)
-                  (* count (buffer-field-size type base))
+                  (* count (buffer-field-size type standard base))
                   (round-to
                    (buffer-field-base :vec4 standard)
                    (* count (round-to (buffer-field-base :vec4 standard)
                                       (buffer-field-base type standard)))))))))
+
+(defgeneric buffer-field-stride (type standard)
+  (:method ((type symbol) standard)
+    (buffer-field-stride (find-class type) standard)))
 
 (defmethod buffer-field-stride ((type (eql :int)) (standard (eql :std140))) 16)
 (defmethod buffer-field-stride ((type (eql :bool)) (standard (eql :std140))) 16)
@@ -175,7 +183,7 @@
 (defmethod buffer-field-stride ((type (eql :mat2)) (standard (eql :std140))) (* 2 (buffer-field-stride :vec4)))
 (defmethod buffer-field-stride ((type (eql :mat3)) (standard (eql :std140))) (* 3 (buffer-field-stride :vec4)))
 (defmethod buffer-field-stride ((type (eql :mat4)) (standard (eql :std140))) (* 4 (buffer-field-stride :vec4)))
-(defmethod buffer-field-stride ((typ cons) (standard (eql :std140)))
+(defmethod buffer-field-stride ((type cons) (standard (eql :std140)))
   (ecase (first type)
     (:struct (buffer-field-size (second type) standard 0))))
 

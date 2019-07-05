@@ -147,7 +147,7 @@ void main(){
   (cutoff :float))
 
 (define-gl-struct light-block
-  (lights `(:array (:struct light) ,MAX-LIGHTS))
+  (lights (:array (:struct light) #.MAX-LIGHTS))
   (count :int))
 
 (define-asset (trial light-block) uniform-buffer

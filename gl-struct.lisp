@@ -50,7 +50,7 @@
 
 (defclass gl-struct-class (standard-class)
   ((gl-type :initarg :gl-type :accessor gl-type)
-   (layout-standard :initarg :memory-standard :initform :std140 :reader layout-standard)))
+   (layout-standard :initarg :layout-standard :initform :std140 :reader layout-standard)))
 
 (defmethod initialize-instance :after ((class gl-struct-class) &key)
   (unless (slot-boundp class 'gl-type)
@@ -62,6 +62,8 @@
 (defmethod c2mop:validate-superclass ((a T) (b gl-struct-class)) NIL)
 
 (defmethod struct-fields ((class gl-struct-class))
+  (unless (c2mop:class-finalized-p class)
+    (c2mop:finalize-inheritance class))
   (loop for slot in (c2mop:class-slots class)
         when (typep slot 'gl-struct-slot)
         collect slot))
@@ -271,6 +273,22 @@
                        name (class-name class))))
       effective)))
 
+(defclass gl-struct-immediate-slot (gl-struct-effective-slot)
+  ())
+
+;; TODO: generate optimised accessor functions
+
+(defmethod c2mop:slot-value-using-class ((class gl-struct-class) (struct gl-struct) (slot gl-struct-immediate-slot))
+  (gl-memref (cffi:inc-pointer (storage-ptr struct) (base-offset slot))
+             (gl-type slot)))
+
+(defmethod (setf c2mop:slot-value-using-class) (value (class gl-struct-class) (struct gl-struct) (slot gl-struct-immediate-slot))
+  (setf (gl-memref (cffi:inc-pointer (storage-ptr struct) (base-offset slot))
+                   (gl-type slot))
+        value))
+
+(defmethod c2mop:slot-definition-allocation ((slot gl-struct-immediate-slot))
+  :none)
 ;; FIXME: Figure out direct accessor functions
 
 (defmacro define-gl-struct (name &body slots)

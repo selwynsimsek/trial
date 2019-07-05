@@ -58,9 +58,8 @@
             collect (gl-source (find-class dependent)))
     (glsl-toolkit:interface-declaration
      (glsl-toolkit:type-qualifier
-      ,@(when (layout buffer)
-          `((glsl-toolkit:layout-qualifier
-             (glsl-toolkit:layout-qualifier-id ,(layout-standard (input buffer))))))
+      (glsl-toolkit:layout-qualifier
+       (glsl-toolkit:layout-qualifier-id ,(layout-standard (find-class (input buffer)))))
       :uniform
       ,@(qualifiers buffer))
      ,(gl-type buffer)
@@ -96,7 +95,7 @@
     (%gl:bind-buffer-base :uniform-buffer binding-point (gl-name buffer))))
 
 (defmethod update-buffer-data ((buffer uniform-buffer) (data (eql T)) &key)
-  (update-buffer-data/ptr buffer (static-vector-pointer (buffer-data data)) (size buffer)))
+  (update-buffer-data/ptr buffer (static-vector-pointer (buffer-data buffer)) (size buffer)))
 
 (defmacro with-buffer-tx ((struct buffer) &body body)
   (let ((bufferg (gensym "BUFFER")))
@@ -104,4 +103,5 @@
             (,struct (struct ,bufferg)))
        (multiple-value-prog1
            (progn ,@body)
-         (update-buffer-data ,bufferg T)))))
+         (with-context (*context*)
+           (update-buffer-data ,bufferg T))))))

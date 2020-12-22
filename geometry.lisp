@@ -12,12 +12,12 @@
 (defgeneric read-geometry (file format &key &allow-other-keys))
 
 (defmethod read-geometry (file (format (eql T)) &rest args)
-  (apply #'read-geometry file (intern (string-upcase (pathname-type file)) :keyword) args))
+  (apply #'read-geometry file (kw (pathname-type file)) args))
 
 (defgeneric write-geometry (geometry file format &key &allow-other-keys))
 
 (defmethod write-geometry (geometry file (format (eql T)) &rest args)
-  (apply #'write-geometry geometry file (intern (string-upcase (pathname-type file)) :keyword) args))
+  (apply #'write-geometry geometry file (kw (pathname-type file)) args))
 
 (defclass sphere-mesh ()
   ((size :initarg :size :accessor size)))
@@ -218,9 +218,13 @@
   buffer)
 
 (defmethod replace-vertex-data ((buffer vertex-buffer) (mesh vertex-mesh) &key (attributes T) update)
-  (setf (buffer-data buffer) (replace-vertex-data (buffer-data buffer) mesh :attributes attributes :buffer-type (buffer-type buffer)))
+  (setf (buffer-data buffer) (replace-vertex-data (or (buffer-data buffer) (make-array 0 :adjustable T :element-type 'single-float)) mesh
+                                                  :attributes attributes :buffer-type (buffer-type buffer)))
   (when update
-    (resize-buffer buffer (* (length (buffer-data buffer)) (gl-type-size (element-type buffer))) :data (buffer-data buffer)))
+    (let ((size (* (length (buffer-data buffer)) (gl-type-size (element-type buffer)))))
+      (if (gl-name buffer)
+          (resize-buffer buffer size :data (buffer-data buffer))
+          (setf (size buffer) size))))
   buffer)
 
 (defmethod replace-vertex-data ((array vertex-array) (mesh vertex-mesh) &key (attributes T) update)
@@ -234,41 +238,7 @@
     array))
 
 (defmethod make-vertex-data ((mesh vertex-mesh) &key (attributes T))
-  ;; Would be better if we didn't have to create an adjustable vector...
-  (replace-vertex-data (make-array 0 :adjustable T :element-type 'single-float)
-                       mesh :attributes attributes))
-
-(defmethod update-instance-for-different-class ((mesh vertex-mesh) (array vertex-array) &key (data-usage :static-draw) (vertex-attributes T) vertex-form)
-  (setf (vertex-form array)
-        (or vertex-form
-            (ecase (face-length mesh)
-              (1 :points)
-              (2 :lines)
-              (3 :triangles)
-              (4 :triangles))))
-  (let* ((primer (if (= 0 (length (vertices mesh)))
-                     (allocate-instance (find-class (vertex-type mesh)))
-                     (aref (vertices mesh) 0)))
-         (attributes (etypecase vertex-attributes
-                       ((eql T) (vertex-attributes primer))
-                       (list vertex-attributes)))
-         (sizes (loop for attr in attributes collect (vertex-attribute-size primer attr)))
-         (buffer (make-vertex-data mesh :attributes attributes)))
-    (setf (data-pointer array) NIL)
-    ;; Construct the buffers and specs
-    (let* ((vbo (make-instance 'vertex-buffer :buffer-data buffer :buffer-type :array-buffer
-                                              :data-usage data-usage :element-type :float
-                                              :size (* (length buffer) (gl-type-size :float))))
-           (ebo (make-instance 'vertex-buffer :buffer-data (faces mesh) :buffer-type :element-array-buffer
-                                              :data-usage data-usage :element-type :unsigned-int
-                                              :size (* (length (faces mesh)) (gl-type-size :unsigned-int))))
-           (specs (loop with stride = (reduce #'+ sizes)
-                        for offset = 0 then (+ offset size)
-                        for size in sizes
-                        for index from 0
-                        collect (list vbo :stride (* stride (gl-type-size :float))
-                                          :offset (* offset (gl-type-size :float))
-                                          :size size
-                                          :index index))))
-      (setf (bindings array) (list* ebo specs))
-      (setf (size array) (length (faces mesh))))))
+  ;; TODO: Would be better if we didn't have to create an adjustable vector...
+  (simplify
+   (replace-vertex-data (make-array 0 :adjustable T :element-type 'single-float)
+                        mesh :attributes attributes)))

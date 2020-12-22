@@ -8,7 +8,7 @@
 
 (defvar *context* NIL)
 
-(defmacro with-context ((context &key force reentrant) &body body)
+(defmacro with-context ((&optional (context '*context*) &key force reentrant) &body body)
   (let* ((cont (gensym "CONTEXT"))
          (thunk (gensym "THUNK"))
          (acquiring-body `(progn
@@ -41,7 +41,6 @@
    (waiting :initform 0 :accessor context-waiting)
    (lock :initform (bt:make-lock "Context lock") :reader context-lock)
    (wait-lock :initform (bt:make-lock "Context wait lock") :reader context-wait-lock)
-   (resources :initform (make-hash-table :test 'eq) :accessor resources)
    (handler :initarg :handler :accessor handler)
    (shared-with :initarg :share-with :reader shared-with))
   (:default-initargs
@@ -74,7 +73,7 @@
 (defgeneric current-p (context &optional thread))
 (defgeneric done-current (context))
 (defgeneric hide (context))
-(defgeneric show (context &key fullscreen))
+(defgeneric show (context &key &allow-other-keys))
 (defgeneric resize (context width height))
 (defgeneric quit (context))
 (defgeneric swap-buffers (context))
@@ -84,6 +83,8 @@
 (defgeneric unlock-cursor (context))
 (defgeneric title (context))
 (defgeneric (setf title) (value context))
+(defgeneric vsync (context))
+(defgeneric (setf vsync) (mode context))
 
 (defgeneric width (context))
 (defgeneric height (context))
@@ -99,9 +100,6 @@
     (with-context (context :force T)
       (v:info :trial.context "Destroying context.")
       (hide context)
-      (loop for resource being the hash-values of (resources context)
-            do (when (allocated-p resource) (deallocate resource)))
-      (clrhash (resources context))
       (call-next-method)
       (setf *context* NIL))))
 
@@ -156,10 +154,6 @@
              (v:warn :trial.context "~a attempted to release ~a even though ~a is active."
                      this context *context*))))))
 
-(defmethod handle (event (global (eql T)))
-  (when *context*
-    (handle event (handler *context*))))
-
 (defclass resize (event)
   ((width :initarg :width :reader width)
    (height :initarg :height :reader height)))
@@ -170,10 +164,16 @@
 (defclass lose-focus (event)
   ())
 
+(defclass window-hidden (event)
+  ())
+
+(defclass window-shown (event)
+  ())
+
 (defmethod describe-object :after ((context context) stream)
   (context-info context stream))
 
-(defun context-info (context stream)
+(defun context-info (context stream &key (show-extensions T))
   (format stream "~&~%Running GL~a.~a ~a~%~
                     Sample buffers:     ~a (~a sample~:p)~%~
                     Max texture size:   ~a~%~
@@ -182,7 +182,7 @@
                     GL Renderer:        ~a~%~
                     GL Version:         ~a~%~
                     GL Shader Language: ~a~%~
-                    GL Extensions:      ~{~a~^ ~}~%"
+                    ~@[GL Extensions:      ~{~a~^ ~}~%~]"
           (gl-property :major-version)
           (gl-property :minor-version)
           (profile context)
@@ -200,9 +200,10 @@
           (gl-property :renderer)
           (gl-property :version)
           (gl-property :shading-language-version)
-          (ignore-errors
-           (loop for i from 0 below (gl:get* :num-extensions)
-                 collect (gl:get-string-i :extensions i)))))
+          (when show-extensions
+            (ignore-errors
+             (loop for i from 0 below (gl:get* :num-extensions)
+                   collect (gl:get-string-i :extensions i))))))
 
 (defun context-note-debug-info (context)
   (v:debug :trial.context "Context information: ~a"

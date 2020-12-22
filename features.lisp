@@ -9,7 +9,8 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defvar *debug-features* '(:trial-debug-controller))
   (defvar *optimize-features* '(:elide-buffer-access-checks
-                                :elide-coercion-size-checks))
+                                :elide-coercion-size-checks
+                                :elide-container-checks))
 
   #+trial-debug-all
   (setf *features* (union *features* *debug-features*))
@@ -37,8 +38,7 @@
 Fix GIT to not convert line endings to CRLF:
 
   git config --global core.autocrlf false
-
-And reclone the project.
+  git add --renormalize .
 
 By the way, I'd like to punch whoever added that feature to
 GIT and made it default in the fucking throat."))

@@ -16,7 +16,7 @@
                (:file "renderer")
                (:file "ui")
                (:file "components")
-               (:file "workbench"))
+               (:file "deploy"))
   :depends-on (:trial
                :alloy-simple-presentations
                :alloy-opengl

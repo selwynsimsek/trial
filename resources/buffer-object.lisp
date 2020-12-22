@@ -7,26 +7,18 @@
 (in-package #:org.shirakumo.fraf.trial)
 
 (defclass buffer-object (gl-resource)
-  ((buffer-type :initarg :buffer-type :accessor buffer-type)
-   (buffer-data :initarg :buffer-data :accessor buffer-data)
-   (data-usage :initarg :data-usage :accessor data-usage)
-   (size :initarg :size :initform NIL :accessor size))
-  (:default-initargs
-   :buffer-type (error "BUFFER-TYPE required.")
-   :data-usage :static-draw
-   :buffer-data NIL))
+  ((buffer-type :initarg :buffer-type :initform (error "BUFFER-TYPE required.") :accessor buffer-type)
+   (buffer-data :initarg :buffer-data :initform NIL :accessor buffer-data)
+   (data-usage :initarg :data-usage :initform :static-draw :accessor data-usage)
+   (size :initarg :size :initform NIL :accessor size)))
 
 (defmethod initialize-instance :before ((buffer buffer-object) &key buffer-type data-usage)
-  (check-buffer-object-type buffer-type)
-  (check-buffer-object-data-usage data-usage))
+  (when buffer-type (check-buffer-object-type buffer-type))
+  (when data-usage (check-buffer-object-data-usage data-usage)))
 
 (defmethod print-object ((buffer buffer-object) stream)
   (print-unreadable-object (buffer stream :type T :identity T)
     (format stream "~a ~a" (buffer-type buffer) (data-usage buffer))))
-
-(defmethod destructor ((buffer buffer-object))
-  (let ((vbo (gl-name buffer)))
-    (lambda () (when vbo (gl:delete-buffers (list vbo))))))
 
 (defun update-buffer-data/ptr (buffer data count &optional (buffer-start 0))
   (let ((buffer-type (buffer-type buffer)))
@@ -48,7 +40,7 @@
     (setf (size buffer) size)))
 
 (defmethod update-buffer-data ((buffer buffer-object) (data (eql T)) &rest args)
-  (apply #'call-next-method buffer (buffer-data buffer) args))
+  (apply #'update-buffer-data buffer (buffer-data buffer) args))
 
 (defmethod update-buffer-data ((buffer buffer-object) data &key (buffer-start 0) (data-start 0) count gl-type)
   (with-data-ptr (ptr data-size data :offset data-start :gl-type gl-type)
@@ -74,3 +66,10 @@
       (setf (data-pointer buffer) vbo)
       (assert (not (null (size buffer))))
       (resize-buffer buffer (size buffer) :data buffer-data))))
+
+(defmethod deallocate ((buffer buffer-object))
+  (gl:delete-buffers (list (gl-name buffer))))
+
+(defmethod unload ((buffer buffer-object))
+  (maybe-free-static-vector (buffer-data buffer))
+  (setf (buffer-data buffer) NIL))

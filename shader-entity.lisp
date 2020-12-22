@@ -93,9 +93,6 @@
             (first effective-superclasses)
             class))))
 
-(defmethod reinitialize-instance :after ((class subject-class) &key)
-  (apply-class-changes class))
-
 (defmethod c2mop:finalize-inheritance :after ((class shader-entity-class))
   (dolist (super (c2mop:class-direct-superclasses class))
     (unless (c2mop:class-finalized-p super)
@@ -103,14 +100,18 @@
   (setf (effective-shaders class) (compute-effective-shaders class))
   (setf (effective-buffers class) (compute-effective-buffers class))
   (setf (effective-shader-class class) (compute-effective-shader-class class))
-  (handle (make-instance 'class-changed :changed-class class) T))
+  (when *context*
+    (handle (make-instance 'class-changed :changed-class class)
+            (handler *context*))))
 
 (defmethod apply-class-changes ((class shader-entity-class))
   (call-next-method)
   (setf (effective-shaders class) (compute-effective-shaders class))
   (setf (effective-buffers class) (compute-effective-buffers class))
   (setf (effective-shader-class class) (compute-effective-shader-class class))
-  (handle (make-instance 'class-changed :changed-class class) T))
+  (when *context*
+    (handle (make-instance 'class-changed :changed-class class)
+            (handler *context*))))
 
 (defmethod (setf direct-shaders) :after (value (class shader-entity-class))
   (when (c2mop:class-finalized-p class)
@@ -151,8 +152,8 @@
   (make-instance 'shader-program
                  :shaders (loop for (type source) on (effective-shaders class) by #'cddr
                                 collect (make-instance 'shader :source source :type type))
-                 :buffers (loop for asset-spec in (effective-buffers class)
-                                collect (apply #'asset asset-spec))))
+                 :buffers (loop for resource-spec in (effective-buffers class)
+                                collect (apply #'// resource-spec))))
 
 (defmethod make-class-shader-program ((class symbol))
   (make-class-shader-program (find-class class)))
@@ -192,20 +193,20 @@
   (symbol (find-class symbol))
   (shader-entity (class-of shader-entity)))
 
-(defmethod class-shader (type (subject shader-entity))
-  (class-shader type (class-of subject)))
+(defmethod class-shader (type (entity shader-entity))
+  (class-shader type (class-of entity)))
 
-(defmethod (setf class-shader) (source type (subject shader-entity))
-  (setf (class-shader type (class-of subject)) source))
+(defmethod (setf class-shader) (source type (entity shader-entity))
+  (setf (class-shader type (class-of entity)) source))
 
-(defmethod remove-class-shader (type (subject shader-entity))
-  (remove-class-shader type (class-of subject)))
+(defmethod remove-class-shader (type (entity shader-entity))
+  (remove-class-shader type (class-of entity)))
 
 (defmethod effective-shader-class ((object shader-entity))
   (effective-shader-class (class-of object)))
 
-(defmethod make-class-shader-program ((subject shader-entity))
-  (make-class-shader-program (class-of subject)))
+(defmethod make-class-shader-program ((entity shader-entity))
+  (make-class-shader-program (class-of entity)))
 
 (defmacro define-shader-entity (&environment env name direct-superclasses direct-slots &rest options)
   (setf direct-superclasses (append direct-superclasses (list 'shader-entity)))
@@ -225,3 +226,18 @@ out vec4 color;
 void main(){
   color = vec4(1.0, 1.0, 1.0, 1.0);
 }")
+
+(defclass standalone-shader-entity (shader-entity)
+  ((shader-program :accessor shader-program))
+  (:metaclass shader-entity-class))
+
+(defmethod initialize-instance :after ((entity standalone-shader-entity) &key)
+  (setf (shader-program entity) (make-class-shader-program entity)))
+
+(defmethod stage :after ((entity standalone-shader-entity) (area staging-area))
+  (stage (shader-program entity) area))
+
+(defmethod render ((entity standalone-shader-entity) target)
+  (let ((program (shader-program entity)))
+    (gl:use-program (gl-name program))
+    (render entity program)))

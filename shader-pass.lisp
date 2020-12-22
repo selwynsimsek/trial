@@ -7,7 +7,7 @@
 (in-package #:org.shirakumo.fraf.trial)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defclass shader-pass-class (shader-subject-class flow:static-node-class)
+  (defclass shader-pass-class (shader-entity-class flow:static-node-class)
     ()))
 
 (defmethod c2mop:validate-superclass ((class shader-pass-class) (superclass T))
@@ -18,7 +18,6 @@
 
 (defmethod c2mop:validate-superclass ((class shader-pass-class) (superclass standard-class))
   T)
-
 
 ;; FIXME: change texspec on per-instance basis to allow customising stuff
 ;;        like texture size.
@@ -75,17 +74,41 @@
 (defmethod check-consistent ((output output))
   ())
 
-(define-shader-subject shader-pass (flow:static-node)
+(defmethod (setf texture) :after ((new-texture texture) (port output))
+  (let ((fb (framebuffer (flow:node port))))
+    (when fb
+      (setf (attachments fb)
+            (loop for (attachment texture . args) in (attachments fb)
+                  collect (list* attachment
+                                 (if (eql attachment (attachment port))
+                                     new-texture
+                                     texture)
+                                 args))))))
+
+(define-shader-entity shader-pass (flow:static-node)
   ((framebuffer :initform NIL :accessor framebuffer)
-   (width :initarg :width :initform NIL :accessor width)
-   (height :initarg :height :initform NIL :accessor height)
-   (uniforms :initarg :uniforms :initform () :accessor uniforms))
+   (active-p :initform T :accessor active-p))
   (:metaclass shader-pass-class)
   (:inhibit-shaders (shader-entity :fragment-shader)))
 
-(defmethod (setf framebuffer) :after ((framebuffer framebuffer) (pass shader-pass))
-  (setf (width pass) (width framebuffer))
-  (setf (height pass) (height framebuffer)))
+(defclass transformed () ())
+(defclass renderable () ())
+
+(defgeneric apply-transforms (object)
+  (:method-combination progn :most-specific-last))
+(defgeneric object-renderable-p (object pass))
+(defgeneric compile-to-pass (scene pass))
+(defgeneric compile-into-pass (object container pass))
+(defgeneric remove-from-pass (object pass))
+(defgeneric shader-program-for-pass (pass object))
+(defgeneric make-pass-shader-program (pass object))
+(defgeneric coerce-pass-shader (pass object type))
+
+(defmethod object-renderable-p (object (pass shader-pass)) NIL)
+(defmethod object-renderable-p ((renderable renderable) (pass shader-pass)) T)
+
+(defmethod stage ((pass shader-pass) (area staging-area))
+  (stage (framebuffer pass) area))
 
 (define-class-shader (shader-pass :fragment-shader)
   "#version 330 core")
@@ -93,11 +116,6 @@
 (defmethod check-consistent ((pass shader-pass))
   (dolist (port (flow:ports pass))
     (check-consistent port)))
-
-(defgeneric register-object-for-pass (pass object))
-(defgeneric shader-program-for-pass (pass object))
-(defgeneric make-pass-shader-program (pass object))
-(defgeneric coerce-pass-shader (pass object type))
 
 (defmethod make-pass-shader-program (pass (class symbol))
   (make-pass-shader-program pass (find-class class)))
@@ -112,10 +130,10 @@
           for inputs = (coerce-pass-shader pass class type)
           for shader = (make-instance 'shader :source inputs :type type)
           do (when inputs (push shader shaders)))
-    (loop for asset-spec in (effective-buffers class)
-          do (push (apply #'asset asset-spec) buffers))
-    (loop for asset-spec in (effective-buffers pass)
-          do (pushnew (apply #'asset asset-spec) buffers))
+    (loop for resource-spec in (effective-buffers class)
+          do (push (apply #'// resource-spec) buffers))
+    (loop for resource-spec in (effective-buffers pass)
+          do (pushnew (apply #'// resource-spec) buffers))
     (make-instance 'shader-program
                    :shaders shaders
                    :buffers buffers)))
@@ -124,14 +142,14 @@
   (when (framebuffer pass)
     (finalize (framebuffer pass))))
 
-(defmethod register-object-for-pass :after ((pass shader-pass) (object container))
-  (for:for ((item over object))
-    (register-object-for-pass pass item)))
+(defmethod render (object (pass shader-pass))
+  (render object (shader-program-for-pass pass object)))
 
-(define-handler (shader-pass register-entity-for-enter enter) (ev entity)
-  (unless (typep entity 'shader-pass)
-    (let ((pass (register-object-for-pass shader-pass entity)))
-      (when pass (load pass)))))
+(defmethod width ((pass shader-pass))
+  (width (framebuffer pass)))
+
+(defmethod height ((pass shader-pass))
+  (height (framebuffer pass)))
 
 (defmacro define-shader-pass (&environment env name direct-superclasses direct-slots &rest options)
   (setf direct-superclasses (append direct-superclasses (list 'shader-pass)))
@@ -141,34 +159,166 @@
      ,direct-slots
      ,@options))
 
-(defun generate-prepare-pass-program (&optional (units (gl:get* :max-texture-image-units)))
+(defun generate-bind-pass-textures (&optional (units (gl:get* :max-texture-image-units)))
   (check-type units (integer 1))
   (let ((*print-case* (readtable-case *readtable*))
         (units (loop for i downfrom (1- units) to 0 collect i)))
-    `(lambda (pass program)
-       (loop with texture-index = ',units
-             with texture-name = ',(loop for unit in units collect
-                                         (intern (format NIL "~a~a" :texture unit) "KEYWORD"))
+    `(lambda (pass)
+       (loop with texture-name = ',(loop for unit in units collect
+                                         (kw (format NIL "~a~a" :texture unit)))
              for port in (flow:ports pass)
              do (typecase port
                   (uniform-port
                    (when (texture port)
-                     (setf (uniform program (uniform-name port)) (pop texture-index))
                      (gl:active-texture (pop texture-name))
                      (gl:bind-texture :texture-2d (gl-name (texture port)))))
                   (image-port
                    (when (texture port)
                      (%gl:bind-image-texture (binding port) (gl-name (texture port)) 0 T 0 (access port)
-                                             (internal-format (texture port)))))))
-       (loop for (name value) in (uniforms pass)
-             do (setf (uniform program name) value)))))
+                                             (internal-format (texture port))))))))))
 
-(defun prepare-pass-program (pass program)
-  (funcall (compile 'prepare-pass-program (generate-prepare-pass-program))
+(defun generate-prepare-pass-program (&optional (units (gl:get* :max-texture-image-units)))
+  (check-type units (integer 1))
+  (let ((*print-case* (readtable-case *readtable*))
+        (units (loop for i downfrom (1- units) to 0 collect i)))
+    `(lambda (pass program)
+       (gl:use-program (gl-name program))
+       (loop with texture-index = ',units
+             for port in (flow:ports pass)
+             do (typecase port
+                  (uniform-port
+                   (when (texture port)
+                     (setf (uniform program (uniform-name port)) (pop texture-index)))))))))
+
+(defun bind-pass-textures (pass)
+  (funcall (compile 'bind-pass-textures (generate-bind-pass-textures))
+           pass))
+
+(defun %prepare-pass-program (pass program)
+  (funcall (compile '%prepare-pass-program (generate-prepare-pass-program))
            pass program))
 
+(defmethod prepare-pass-program ((pass shader-pass) (program shader-program))
+  (%prepare-pass-program pass program))
+
+(defmethod blit-to-screen ((pass shader-pass))
+  (blit-to-screen (framebuffer pass)))
+
+(defmethod capture ((pass shader-pass) &rest args)
+  (apply #'capture (framebuffer pass) args))
+
+(defmethod render :before ((pass shader-pass) target)
+  (activate (framebuffer pass))
+  (bind-pass-textures pass))
+
+(defmethod render (object (pass shader-pass))
+  (let ((program (shader-program-for-pass pass object)))
+    (prepare-pass-program pass program)
+    (render object program)))
+
+(define-shader-pass scene-pass (listener)
+  ((actions :initform (make-instance 'flare-queue:queue) :accessor actions)
+   (group-pointers :initform (make-hash-table :test 'eq) :accessor group-pointers)
+   (guards :initform (cons NIL NIL) :accessor guards)))
+
+;;; KLUDGE: The protocol that follows is EXTREMELY bad under parallel updates.
+;;;         If we ever want to allow such (and it's very possible we do), this will
+;;;         need to be revised thoroughly.
+(defun push-pass-action (pass action)
+  (flare-queue:cell-insert-before
+   (flare-queue:make-cell (list* (fdefinition (first action)) (rest action)) NIL NIL)
+   (cdr (guards pass)))
+  (incf (slot-value (actions pass) 'flare-queue::size)))
+
+(defun finish-pass-group (pass object)
+  ;; TODO: optimisation, contract empty groups.
+  ;;       Though this might be bad for future dynamic inserts, so I'm not sure.
+  ;;       Would have to reconstruct the context when a previously empty group
+  ;;       becomes populated.
+  (destructuring-bind (start . end) (guards pass)
+    ;; If the group is empty, insert a NOOP.
+    (when (eql (flare-queue:right start) end)
+      (push-pass-action pass '(null NIL)))
+    (setf (gethash object (group-pointers pass)) (cons (flare-queue:right start) (flare-queue:left end)))
+    (setf (guards pass) (cons (flare-queue:left end) end))))
+
+(defmethod compile-to-pass (object (pass scene-pass))
+  (when (object-renderable-p object pass)
+    (let ((program (register-object-for-pass pass object)))
+      (when (typep pass 'per-object-pass)
+        (push-pass-action pass `(prepare-pass-program ,pass ,program)))
+      (push-pass-action pass `(render ,object ,program)))))
+
+(defmethod compile-to-pass :around ((object transformed) (pass scene-pass))
+  ;; KLUDGE: early out to avoid allocating pointless push/pop pairs.
+  (when (or (object-renderable-p object pass)
+            (typep object 'flare:container))
+    (push-pass-action pass `(push-matrix))
+    (push-pass-action pass `(apply-transforms ,object))
+    (call-next-method)
+    (push-pass-action pass `(pop-matrix))))
+
+(defmethod compile-to-pass :after ((object flare:container) (pass scene-pass))
+  (for:for ((child over object))
+    (compile-to-pass child pass)
+    ;; KLUDGE: We can't do this in another method for the OBJECT, as the
+    ;;         AROUND for TRANSFORMED must happen before we finish the group.
+    (finish-pass-group pass child)))
+
+(defmethod compile-to-pass :around ((scene scene) (pass scene-pass))
+  (flare-queue:clear-queue (actions pass))
+  (clrhash (group-pointers pass))
+  (setf (guards pass) (cons (flare-queue::head (actions pass))
+                            (flare-queue::tail (actions pass))))
+  (call-next-method)
+  (finish-pass-group pass scene))
+
+(defmethod remove-from-pass ((entity entity) (pass scene-pass))
+  (when (gethash entity (group-pointers pass))
+    (destructuring-bind (start . end) (gethash entity (group-pointers pass))
+      ;; The saved group is just a guard so fuse them together and the rest drops out magically.
+      ;; FIXME: this does not adjust the queue's size!
+      (flare-queue:remove-cells start end)
+      (remhash entity (group-pointers pass)))))
+
+(defmethod compile-into-pass ((entity entity) (container flare:container) (pass scene-pass))
+  ;; KLUDGE: We don't actually know /where/ exactly the entity was inserted.
+  ;;         Figuring out where would either involve recomputing the entire container
+  ;;         which is very costly especially at the scene root, or finding the next
+  ;;         neighbour within the container that has a group and inserting before,
+  ;;         which is better but still involves a linear search through the container.
+  ;;         We opt for guessing that the entity is inserted at the end of the group.
+  (destructuring-bind (start . end) (gethash container (group-pointers pass))
+    (declare (ignore start))
+    ;; KLUDGE: If it is a transformed container the last action is a pop-matrix.
+    ;;         We need to insert before that.
+    (when (typep container 'transformed)
+      (setf end (flare-queue:left end)))
+    (setf (guards pass) (cons (flare-queue:left end) end))
+    (compile-to-pass entity pass)
+    (finish-pass-group pass entity)))
+
+(defmethod handle ((ev class-changed) (pass scene-pass))
+  (call-next-method)
+  ;; FIXME: Need to re-evaluate groups, but this can be difficult.
+  ;;        If a class changes to be one that should now be included in the actions
+  ;;        somehow, but was not before, it will not have a group that we can update.
+  ;;        We'd also not know 'where' to insert the new group, but parent relations
+  ;;        are typically not kept. What to do?
+  )
+
+(defmethod render ((pass scene-pass) target)
+  (declare (optimize speed))
+  (flare-queue:do-queue (action (actions pass))
+    (apply (the function (car action)) (the list (cdr action)))))
+
 (define-shader-pass per-object-pass ()
-  ((assets :initform (make-hash-table :test 'eql) :accessor assets)))
+  ((assets :initform (make-hash-table :test 'eq) :accessor assets)))
+
+(defmethod stage ((pass per-object-pass) (area staging-area))
+  (call-next-method)
+  (loop for asset being the hash-values of (assets pass)
+        do (stage asset area)))
 
 ;; FIXME: Maybe consider determining effective class for each
 ;;        individual shader stage as they might each change
@@ -176,25 +326,20 @@
 ;;        effectively.
 ;; FIXME: Share SHADER assets between shader programs by caching
 ;;        them... somewhere somehow?
-(define-handler (per-object-pass class-changed) (ev)
-  (let* ((pass per-object-pass)
-         (class (changed-class ev))
-         (assets (assets pass)))
+(defmethod handle ((ev class-changed) (pass per-object-pass))
+  (call-next-method)
+  (let ((class (changed-class ev))
+        (assets (assets pass)))
     (when (typep class 'shader-entity-class)
       ;; FIXME: What happens if the effective shader class changes?
+      ;;        We might be leaking shader programs for stale classes then.
       (flet ((refresh (class)
                (let ((prev (gethash class assets)))
                  (when prev
+                   (v:info :trial.shader-pass "Refreshing shader program for ~a" class)
                    (let ((new (make-pass-shader-program pass class)))
-                     (if (allocated-p prev)
-                         (with-context (*context*)
-                           (with-simple-restart (continue "Ignore the change and continue with the hold shader.")
-                             (dolist (shader (shaders new))
-                               (unless (allocated-p shader) (allocate shader)))
-                             (allocate new)
-                             (deallocate prev)
-                             (setf (gethash class assets) new)))
-                         (setf (gethash class assets) new)))))))
+                     (setf (buffers prev) (buffers new))
+                     (setf (shaders prev) (shaders new)))))))
         (cond ((eql class (class-of pass))
                ;; Pass changed, recompile everything
                (loop for class being the hash-keys of assets
@@ -203,8 +348,8 @@
                ;; Object changed, recompile it
                (refresh class)))))))
 
-(defmethod shader-program-for-pass ((pass per-object-pass) (subject shader-entity))
-  (gethash (effective-shader-class subject) (assets pass)))
+(defmethod shader-program-for-pass ((pass per-object-pass) (entity shader-entity))
+  (gethash (effective-shader-class entity) (assets pass)))
 
 (defmethod coerce-pass-shader ((pass per-object-pass) class type)
   ;; FIXME: This re-introduces shaders from the pass that were suppressed in the
@@ -214,60 +359,61 @@
     (when sources
       (glsl-toolkit:merge-shader-sources sources))))
 
-(defmethod register-object-for-pass ((pass per-object-pass) o))
-
 (defmethod register-object-for-pass ((pass per-object-pass) (class shader-entity-class))
   (let ((effective-class (effective-shader-class class)))
-    (unless (gethash effective-class (assets pass))
-      (let ((program (make-pass-shader-program pass effective-class)))
-        (when (gl-name (framebuffer pass))
-          (mapc #'load (dependencies program))
-          (load program))
-        (setf (gethash effective-class (assets pass)) program)))))
+    (or (gethash effective-class (assets pass))
+        (let ((program (make-pass-shader-program pass effective-class)))
+          (when (gl-name (framebuffer pass))
+            (mapc #'load (dependencies program))
+            (load program))
+          (setf (gethash effective-class (assets pass)) program)))))
 
-(defmethod register-object-for-pass ((pass per-object-pass) (subject shader-entity))
-  (register-object-for-pass pass (class-of subject)))
+(defmethod register-object-for-pass ((pass per-object-pass) (entity shader-entity))
+  (register-object-for-pass pass (class-of entity)))
 
-(defmethod paint :around ((subject shader-entity) (pass per-object-pass))
-  (let ((program (shader-program-for-pass pass subject)))
-    (gl:use-program (gl-name program))
-    (prepare-pass-program pass program)
-    (call-next-method)))
-
-(define-shader-pass single-shader-pass (bakable)
+(define-shader-pass single-shader-pass ()
   ((shader-program :initform NIL :accessor shader-program)))
 
-(define-handler (single-shader-pass class-changed) (ev)
-  (let ((pass single-shader-pass))
-    (when (eql (changed-class ev) (class-of pass))
-      (let* ((old (shader-program pass))
-             (new (make-class-shader-program pass)))
-        (when (and old (gl-name old))
-          (with-context (*context*)
-            (dolist (shader (dependencies new))
-              (unless (gl-name shader) (load shader)))
-            (load new)
-            (deallocate old)))
-        (setf (shader-program pass) new)))))
-
-(defmethod bake ((pass single-shader-pass))
+(defmethod initialize-instance :after ((pass single-shader-pass) &key)
   (setf (shader-program pass) (make-class-shader-program pass)))
 
-(defmethod register-object-for-pass ((pass single-shader-pass) o))
+(defmethod stage ((pass single-shader-pass) (area staging-area))
+  (call-next-method)
+  (stage (shader-program pass) area))
+
+(defmethod handle ((ev class-changed) (pass single-shader-pass))
+  (when (eql (changed-class ev) (class-of pass))
+    (let ((prev (shader-program pass))
+          (new (make-class-shader-program pass)))
+      (v:info :trial.shader-pass "Refreshing shader program for ~a" (class-of pass))
+      (setf (buffers prev) (buffers new))
+      (setf (shaders prev) (shaders new)))))
+
+(defmethod register-object-for-pass ((pass single-shader-pass) o)
+  (shader-program pass))
 
 (defmethod shader-program-for-pass ((pass single-shader-pass) o)
   (shader-program pass))
 
-(defmethod paint-with :around ((pass single-shader-pass) thing)
-  (let ((program (shader-program pass)))
-    (gl:use-program (gl-name program))
-    (prepare-pass-program pass program)
-    (call-next-method)))
+(defmethod render ((pass single-shader-pass) (_ null))
+  (render pass (shader-program pass)))
+
+(defmethod render :around ((pass single-shader-pass) (program shader-program))
+  (prepare-pass-program pass program)
+  (call-next-method))
+
+(define-shader-pass single-shader-scene-pass (single-shader-pass scene-pass)
+  ())
 
 (define-shader-pass post-effect-pass (single-shader-pass)
-  ((vertex-array :initform (asset 'trial 'fullscreen-square) :accessor vertex-array)))
+  ((vertex-array :initform (// 'trial 'fullscreen-square) :accessor vertex-array)))
 
-(defmethod paint-with ((pass post-effect-pass) thing)
+(defmethod compile-to-pass (object (pass post-effect-pass)))
+(defmethod compile-into-pass (object container (pass post-effect-pass)))
+(defmethod remove-from-pass (object (pass post-effect-pass)))
+(defmethod handle ((event event) (pass post-effect-pass)))
+
+(defmethod render ((pass post-effect-pass) (program shader-program))
   (let ((vao (vertex-array pass)))
     (with-pushed-attribs
       (disable :depth-test)
@@ -292,7 +438,7 @@ in vec2 tex_coord;")
 
 (define-shader-pass sample-reduction-pass (post-effect-pass)
   ((previous-pass :port-type input :texspec (:target :texture-2d-multisample))
-   (color :port-type output :texspec (:target :texture-2d))))
+   (color :port-type output :texspec (:target :texture-2d) :reader color)))
 
 (define-class-shader (sample-reduction-pass :fragment-shader)
   "uniform sampler2DMS previous_pass;

@@ -15,9 +15,6 @@
   (uniform NIL :type string)
   (texture NIL :type texture))
 
-(defmethod compute-resources ((clipmap geometry-clipmap-map) resources readying cache)
-  (vector-push-extend (geometry-clipmap-map-texture clipmap) resources))
-
 (define-shader-entity geometry-clipmap (located-entity)
   ((previous-update-location :initform (vec2 most-positive-single-float most-positive-single-float)
                              :accessor previous-update-location)
@@ -134,10 +131,9 @@
   (setf (vz (location clipmap)) y)
   (maybe-update-region clipmap))
 
-(defmethod paint ((clipmap geometry-clipmap) (pass shader-pass))
+(defmethod render ((clipmap geometry-clipmap) (program shader-program))
   (maybe-update-region clipmap)
-  (let ((program (shader-program-for-pass pass clipmap))
-        (levels (levels clipmap))
+  (let ((levels (levels clipmap))
         (block (clipmap-block clipmap)))
     ;;(gl:polygon-mode :front-and-back :fill)
     ;;(gl:polygon-mode :front-and-back :line)
@@ -259,7 +255,7 @@ void main(){
 (defun make-clipmap-block (n levels)
   (let* ((m (/ n 4))
          (s (/ 4 n))
-         (vao (change-class (make-quad-grid s m m) 'vertex-array))
+         (vao (generate-resources 'mesh-loader (make-quad-grid s m m)))
          (array (make-array (* 3 (+ 4 (* 12 levels))) :element-type 'single-float))
          (vbo (make-instance 'vertex-buffer :buffer-data array))
          (i -1))

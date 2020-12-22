@@ -6,33 +6,100 @@
 
 (defpackage #:org.shirakumo.fraf.trial.steam
   (:use #:cl)
-  (:export #:main #:steam-required-p)
+  (:export
+   #:main
+   #:steam-required-p
+   #:use-steaminput
+   #:generate-vdf)
   (:local-nicknames
    (#:trial #:org.shirakumo.fraf.trial)
    (#:steam #:org.shirakumo.fraf.steamworks)))
 (in-package #:org.shirakumo.fraf.trial.steam)
 
-(defclass main (trial:main)
-  ())
+(defun action-label (action)
+  (let ((action (etypecase action
+                  (symbol action)
+                  (class (class-name action))
+                  (standard-object (class-name (class-of action))))))
+    (format NIL "~a_~a"
+            (cl-ppcre:regex-replace-all "[ -]" (package-name (symbol-package action)) "")
+            (cffi:translate-camelcase-name action))))
 
-(defmethod steam-required-p ((main main)) NIL)
+(defclass main (trial:main)
+  ((analog-actions :initform #() :accessor analog-actions)
+   (digital-actions :initform #() :accessor digital-actions)
+   (use-steaminput :initform T :initarg :use-steaminput :accessor use-steaminput)
+   (steam-required-p :initform NIL :initarg :require-steam :accessor steam-required-p)))
 
 (defmethod initialize-instance :after ((main main) &key app-id)
-  (handler-bind ((steam:initialization-failed
+  (handler-bind ((error
                    (lambda (e)
+                     (v:severe :trial.steam "Failed to initialise steamworks: ~a" e)
+                     (v:debug :trial.steam e)
                      (when (deploy:deployed-p)
-                       (if (steam-required-p main)
-                           (invoke-restart 'steam:restart)
-                           (invoke-restart 'ignore))))))
+                       (cond ((steam-required-p main)
+                              (invoke-restart 'steam:restart))
+                             (T
+                              (invoke-restart 'ignore)))))))
     (when (or (steam-required-p main)
               (deploy:deployed-p))
       (with-simple-restart (ignore "Ignore the steamworks failure.")
-        (make-instance 'steam:steamworks-client :app-id app-id)))))
+        (v:info :trial.steam "Initialising steamworks")
+        (make-instance 'steam:steamworks-client :app-id app-id)
+        ;; Populate action sets
+        (when (use-steaminput main)
+          (let ((input (steam:interface 'steam:steaminput T))
+                (analog ())
+                (digital ()))
+            (dolist (class (trial:list-leaf-classes (find-class 'trial:action)))
+              (cond ((or (eql class (find-class 'trial:analog-action))
+                         (eql class (find-class 'trial:directional-action))
+                         (eql class (find-class 'trial:spatial-action))))
+                    ((or (c2mop:subclassp class (find-class 'trial:analog-action))
+                         (c2mop:subclassp class (find-class 'trial:directional-action)))
+                     (let ((action (steam:find-analog-action input (action-label class))))
+                       (when action (push (cons action class) analog))))
+                    (T
+                     (let ((action (steam:find-digital-action input (action-label class))))
+                       (when action (push (cons action class) digital))))))
+            (setf (analog-actions main) (coerce analog 'vector))
+            (setf (digital-actions main) (coerce digital 'vector))))))
+    (handler-case (steam:steamworks)
+      (steam:steamworks-not-initialized ()
+        (v:info :trial.steam "Steamworks not initialised, disabling steam input.")
+        (setf (use-steaminput main) NIL)))))
+
+(defmethod (setf trial:active-p) :after (value (set trial:action-set))
+  (let ((label (action-label set)))
+    (v:info :trial.steam "Switching action set to ~s" label)
+    (steam:activate (steam:find-action-set (steam:interface 'steam:steaminput T) label) T)))
 
 (defmethod trial:finalize :after ((main main))
   (handler-case
       (steam:free (steam:steamworks))
     (steam:steamworks-not-initialized ())))
+
+(defmethod trial:poll-input :after ((main main))
+  (when (use-steaminput main)
+    (let ((input (steam:interface 'steam:steaminput T)))
+      (steam:run-frame input)
+      (macrolet ((fire (type &rest args)
+                   `(progn (v:info :trial.steam "Firing from steaminput: ~a" ,type)
+                           (trial:handle (make-instance ,type ,@args) main))))
+        (steam:do-controllers (controller input)
+          (loop for (action . class) across (analog-actions main)
+                do (destructuring-bind (px py) (cddr (steam:previous-action-data action))
+                     (destructuring-bind (active mode x y) (steam:action-data action controller)
+                       (declare (ignore mode))
+                       (when active
+                         (if (c2mop:subclassp class (find-class 'trial:directional-action))
+                             (when (or (/= x px) (/= y py)) (fire class :x x :y y))
+                             (when (/= x px) (fire class :value x)))))))
+          (loop for (action . class) across (digital-actions main)
+                do (let ((previous (second (steam:previous-action-data action))))
+                     (destructuring-bind (active state) (steam:action-data action controller)
+                       (when (and active state (null previous))
+                         (fire class))))))))))
 
 (deploy:define-hook (:build check-steamworks) ()
   (unless steam::*low-level-present*
@@ -40,3 +107,76 @@
 Please check the CL-STEAMWORKS setup instructions.
 
 Refusing to deploy as the game would not launch properly anyway.")))
+
+
+(defun action-labels (action)
+  (let ((docstring (documentation action 'type))
+        (labels ()))
+    (or (cl-ppcre:register-groups-bind (groups) ("Labels:((\\n  *[^\\n]*)*)" docstring)
+          (dolist (label (cl-ppcre:split "\\n  *" groups) labels)
+            (cl-ppcre:register-groups-bind (language label) ("^(.*?): *(.*?) *$" label)
+              (push (list language label) labels))))
+        (list (list "english" (string-downcase (class-name (trial:ensure-class action))))))))
+
+(defun generate-vdf (file &key (actions T) (if-exists :error))
+  (let ((localization ())
+        (action-sets ())
+        (actions (etypecase actions
+                   (list
+                    actions)
+                   ((eql T)
+                    (loop for class in (trial:list-leaf-classes (find-class 'trial:action))
+                          unless (find class (list (find-class 'trial:analog-action)
+                                                   (find-class 'trial:directional-action)
+                                                   (find-class 'trial:spatial-action)))
+                          collect (class-name class)))
+                   (symbol
+                    (loop for mapping in (second (trial:mapping actions))
+                          collect (second mapping))))))
+    (loop for action in actions
+          for action-set = (trial:action-set action)
+          do (loop for (language label) in (action-labels action)
+                   do (setf (getf (getf localization language) (action-label action)) label))
+             (let ((set (assoc (action-label action-set) action-sets :test #'string=)))
+               (loop for (language label) in (action-labels action-set)
+                     unless (find (action-label action-set) (getf localization language) :test #'string=)
+                     do (setf (getf (getf localization language) (action-label action-set)) label))
+               (unless set
+                 (setf set (list (action-label (trial:action-set action))
+                                 (format NIL "#~a" (action-label action-set))
+                                 () () ()))
+                 (push set action-sets))
+               (cond ((c2mop:subclassp (trial:ensure-class action) (find-class 'trial:directional-action))
+                      (push (list (action-label action) (format NIL "#~a" (action-label action)) "joystick_move")
+                            (third set)))
+                     ((c2mop:subclassp (trial:ensure-class action) (find-class 'trial:analog-action))
+                      (push (list (action-label action) (format NIL "#~a" (action-label action)))
+                            (fourth set)))
+                     ((c2mop:subclassp (trial:ensure-class action) (find-class 'trial:action))
+                      (push (list (action-label action) (format NIL "#~a" (action-label action)))
+                            (fifth set)))
+                     (T (error "~s is not an action class." action)))))
+    (with-open-file (stream file :direction :output :if-exists if-exists)
+      (format stream "~
+\"In Game Actions\"{
+  \"actions\"{~{
+    ~{~s{
+      \"title\" ~s
+      \"StickPadGyro\"{~{
+        ~{~s {\"title\" ~s \"input_mode\" ~s}~}~}
+      }
+      \"AnalogTrigger\"{~{
+        ~{~s ~s~}~}
+      }
+      \"Button\"{~{
+        ~{~s ~s~}~}
+      }
+    }~}~}
+  }
+  \"localization\"{~{
+    ~s{~{
+      ~s ~s~}
+    }~}
+  }
+}"
+              action-sets localization))))

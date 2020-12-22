@@ -13,23 +13,23 @@
     (vector
      (maybe-free-static-vector data))))
 
-(defmacro with-pointer-to-vector-data ((ptr data) &body body)
+(defmacro with-pointer-to-vector-data ((ptr data &optional element-type) &body body)
   (let ((datag (gensym "DATA")) (thunk (gensym "THUNK"))
         (type (gensym "TYPE")) (i (gensym "I")))
     `(let ((,datag ,data))
        (flet ((,thunk (,ptr)
                 (declare (type cffi:foreign-pointer ,ptr))
                 ,@body))
-         (cond #+sbcl
+         (cond ((static-vector-p ,datag)
+                (let ((,ptr (static-vector-pointer ,datag)))
+                  (,thunk ,ptr)))
+               #+sbcl
                ((typep ,datag 'sb-kernel:simple-unboxed-array)
                 (sb-sys:with-pinned-objects (,datag)
                   (let ((,ptr (sb-sys:vector-sap ,datag)))
                     (,thunk ,ptr))))
-               ((static-vector-p ,datag)
-                (let ((,ptr (static-vector-pointer ,datag)))
-                  (,thunk ,ptr)))
                (T
-                (let ((,type (cl-type->gl-type (array-element-type ,datag))))
+                (let ((,type (cl-type->gl-type ,(or element-type `(array-element-type ,datag)))))
                   (cffi:with-foreign-object (,ptr ,type (length ,datag))
                     (dotimes (,i (length ,datag))
                       (setf (cffi:mem-aref ,ptr ,type ,i) (aref ,datag ,i)))

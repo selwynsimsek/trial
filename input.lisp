@@ -96,11 +96,21 @@
    :old-pos (error "OLD-POS required.")
    :pos (error "POS required.")))
 
-(define-uniform-retention key (key-press key-release key)
-  key)
-
-(define-uniform-retention mouse (mouse-press mouse-release button)
-  button)
-
-(define-uniform-retention gamepad (gamepad-press gamepad-release button)
-  button)
+(define-mapping retain-generic (loop ev)
+  (typecase ev
+    (mouse-press
+     (setf (retained (button ev)) T))
+    (mouse-release
+     (setf (retained (button ev)) NIL))
+    (key-press
+     (setf (retained (key ev)) T)
+     (case (key ev)
+       ((:left-control :right-control) (setf (retained :control) T))
+       ((:left-shift :right-shift) (setf (retained :shift) T))
+       ((:left-alt :right-alt) (setf (retained :alt) T))))
+    (key-release
+     (setf (retained (key ev)) NIL)
+     (case (key ev)
+       ((:left-control :right-control) (setf (retained :control) NIL))
+       ((:left-shift :right-shift) (setf (retained :shift) NIL))
+       ((:left-alt :right-alt) (setf (retained :alt) NIL))))))

@@ -23,12 +23,36 @@
                (setf (gethash (shader-type shader) table) shader))
         finally (return shaders)))
 
-(defmethod destructor ((program shader-program))
-  (let ((prog (gl-name program)))
-    (lambda () (when prog (gl:delete-program prog)))))
-
 (defmethod dependencies ((program shader-program))
-  (copy-list (shaders program)))
+  (append (shaders program)
+          (buffers program)))
+
+(defun link-program (program shaders)
+  (let ((prog (gl-name program)))
+    (dolist (shader shaders)
+      (check-allocated shader)
+      (gl:attach-shader prog (gl-name shader)))
+    (gl:link-program prog)
+    (dolist (shader shaders)
+      (gl:detach-shader prog (gl-name shader)))
+    (unless (gl:get-program prog :link-status)
+      (error "Failed to link ~a: ~%~a"
+             program (gl:get-program-info-log prog)))
+    (v:debug :trial.asset "Linked ~a with ~a." program shaders)
+    (loop for buffer in (buffers program)
+          do (bind buffer program))
+    (clrhash (uniform-map program))))
+
+(defmethod (setf shaders) :before (shaders (program shader-program))
+  (when (allocated-p program)
+    ;; If we're already hot, relink immediately.
+    (handler-bind ((resource-not-allocated (constantly-restart 'continue)))
+      (link-program program shaders))))
+
+(defmethod (setf buffers) :before (buffers (program shader-program))
+  (when (allocated-p program)
+    (loop for buffer in buffers
+          do (bind buffer program))))
 
 (defmethod allocate ((program shader-program))
   (let ((shaders (shaders program)))
@@ -36,28 +60,18 @@
     (let ((prog (gl:create-program)))
       (with-cleanup-on-failure (progn (gl:delete-program prog)
                                       (setf (data-pointer program) NIL))
-        (dolist (shader shaders)
-          (check-allocated shader)
-          (gl:attach-shader prog (gl-name shader)))
-        (gl:link-program prog)
-        (dolist (shader shaders)
-          (gl:detach-shader prog (gl-name shader)))
-        (unless (gl:get-program prog :link-status)
-          (error "Failed to link ~a: ~%~a"
-                 program (gl:get-program-info-log prog)))
-        (v:debug :trial.asset "Linked ~a with ~a." program shaders)
         (setf (data-pointer program) prog)
-        (loop for buffer in (buffers program)
-              for i from 0
-              do (bind buffer program i))))))
+        (link-program program shaders)))))
 
-(defmethod deallocate :after ((program shader-program))
-  (clrhash (uniform-map program)))
+(defmethod deallocate ((program shader-program))
+  (clrhash (uniform-map program))
+  (gl:delete-program (gl-name program)))
 
 (declaim (inline %set-uniform))
 (defun %set-uniform (location data)
   (declare (optimize speed))
   (declare (type (signed-byte 32) location))
+  #+sbcl (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
   (etypecase data
     (vec4 (%gl:uniform-4f location (vx data) (vy data) (vz data) (vw data)))
     (vec3 (%gl:uniform-3f location (vx data) (vy data) (vz data)))
@@ -114,9 +128,10 @@
         (locationg (gensym "LOCATION")))
     (cond ((constantp name env)
            `(let ((,nameg (load-time-value
-                           (etypecase ,name
-                             (string ,name)
-                             (symbol (symbol->c-name ,name)))))
+                           (locally #+sbcl (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
+                             (etypecase ,name
+                               (string ,name)
+                               (symbol (symbol->c-name ,name))))))
                   (,assetg ,asset))
               (%set-uniform (uniform-location ,assetg ,nameg) ,data)))
           (T

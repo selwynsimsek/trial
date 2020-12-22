@@ -190,7 +190,15 @@
 
 (defun prompt-char (thing &key (bank :gamepad))
   (let ((table (getf *prompt-char-table* bank)))
-    (when table (gethash thing table))))
+    (when table
+      (etypecase thing
+        (character thing)
+        (keyword (gethash thing table))
+        (symbol (let ((type (ecase bank
+                              (:gamepad 'gamepad-event)
+                              (:keyboard 'key-event)
+                              (:mouse 'mouse-event))))
+                  (gethash (first (event-trigger thing type)) table)))))))
 
 (defun prompt-charset ()
   (sort (delete-duplicates
@@ -200,13 +208,8 @@
                           do (write-char string out)))))
         #'char<))
 
-(define-asset (trial prompt-font) font
-    #p"PromptFont.ttf"
-  :charset (prompt-charset)
-  :size 64)
-
-(define-shader-subject prompt (text)
-  ((texture :initform (asset 'trial 'prompt-font))))
+(define-shader-entity prompt ()
+  ())
 
 (defmethod (setf text) ((character character) (prompt prompt))
   (setf (text prompt) (string character)))

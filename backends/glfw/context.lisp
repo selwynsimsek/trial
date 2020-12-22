@@ -8,12 +8,16 @@
 
 (defvar *window-table* (tg:make-weak-hash-table :test 'eq :weakness :value))
 
+(cffi:defcvar (optimus "NvOptimusEnablement") :uint32)
+(cffi:defcvar (xpress "AmdPowerXpressRequestHighPerformance") :int)
+
 (defclass context (trial:context)
   ((title :initarg :title :accessor title)
    (cursor-visible :initform T :accessor cursor-visible)
    (mouse-pos :initform (vec 0 0) :accessor mouse-pos)
    (initargs :initform NIL :accessor initargs)
-   (window :initform NIL :accessor window))
+   (window :initform NIL :accessor window)
+   (vsync :initarg :vsync :accessor vsync))
   (:default-initargs
    :resizable T
    :visible T
@@ -36,12 +40,15 @@
                                           (stereo-buffer NIL stereo-buffer-p)
                                           (vsync NIL vsync-p)
                                      ;; Extra options
+                                          (fullscreen NIL fullscreen-p)
                                           (resizable NIL resizable-p)
                                           (visible NIL visible-p)
                                           (decorated NIL decorated-p)
                                           (robustness NIL robustness-p)
                                           (forward-compat NIL forward-compat-p)
                                           (debug-context NIL debug-context-p))
+  #+windows (ignore-errors (setf optimus 1))
+  #+windows (ignore-errors (setf xpress 1))
   (flet (((setf g) (value name) (setf (getf (initargs context) name) value)))
     (macrolet ((maybe-set (var &optional (name (intern (string var) :keyword)))
                  `(when ,(let ((*print-case* (readtable-case *readtable*)))
@@ -51,15 +58,15 @@
       (maybe-set height)
       (maybe-set double-buffering)
       (maybe-set stereo-buffer)
+      (maybe-set fullscreen)
       (maybe-set resizable)
       (maybe-set visible)
       (maybe-set decorated)
       (maybe-set robustness :context-robustness)
       (maybe-set forward-compat :opengl-forward-compat)
       (maybe-set debug-context :opengl-debug-context)
-      (when vsync-p
-        (setf (g :refresh-rate)
-              (ecase vsync (:off 0) (:on 1) (:adaptive -1))))
+      (setf (g :refresh-rate)
+            (ecase vsync ((NIL :off) 0) ((T :on) 1) (:adaptive -1)))
       (when version-p
         (setf (g :context-version-major) (first version))
         (setf (g :context-version-minor) (second version)))
@@ -97,7 +104,9 @@
         (let ((window (%glfw:create-window (getf initargs :width)
                                            (getf initargs :height)
                                            (title context)
-                                           (cffi:null-pointer)
+                                           (if (getf initargs :fullscreen)
+                                               (%glfw:get-primary-monitor)
+                                               (cffi:null-pointer))
                                            (if (shared-with context)
                                                (window (shared-with context))
                                                (cffi:null-pointer)))))
@@ -106,8 +115,10 @@
           (setf (gethash (cffi:pointer-address window) *window-table*) context)
           (setf (window context) window)
           (cl-glfw3:make-context-current window)
+          (cl-glfw3:swap-interval (getf initargs :refresh-rate))
           (cl-glfw3:set-window-size-callback 'ctx-size window)
           (cl-glfw3:set-window-focus-callback 'ctx-focus window)
+          (cl-glfw3:set-window-iconify-callback 'ctx-iconify window)
           (cl-glfw3:set-key-callback 'ctx-key window)
           (cl-glfw3:set-char-callback 'ctx-char window)
           (cl-glfw3:set-mouse-button-callback 'ctx-button window)
@@ -164,6 +175,9 @@
 
 (defmethod (setf title) :before (value (context context))
   (cl-glfw3:set-window-title value (window context)))
+
+(defmethod (setf vsync) :before (value (context context))
+  (cl-glfw3:swap-interval (ecase value ((NIL :off) 0) ((:on T) 1) (:adaptive -1))))
 
 (defmethod width ((context context))
   (first (cl-glfw3:get-framebuffer-size (window context))))
@@ -226,6 +240,11 @@
     (handle (make-instance (if focusedp 'gain-focus 'lose-focus))
             (handler context))))
 
+(cl-glfw3:def-window-iconify-callback ctx-iconify (window iconifiedp)
+  (%with-context
+    (handle (make-instance (if iconifiedp 'window-hidden 'window-shown))
+            (handler context))))
+
 (cl-glfw3:def-key-callback ctx-key (window key scancode action modifiers)
   (declare (ignore scancode))
   (%with-context
@@ -242,6 +261,13 @@
                               :key (glfw-key->key key)
                               :modifiers modifiers)
                (handler context))))))
+
+(cffi:defcallback ctx-char :void ((window :pointer) (char :unsigned-int))
+  (when (< char #x110000)
+    (let ((char (code-char char)))
+      (%with-context
+        (handle (make-instance 'text-entered :text (string char))
+                (handler context))))))
 
 (cl-glfw3:def-char-callback ctx-char (window char)
   (%with-context
@@ -312,9 +338,21 @@
     :dont-open T
     :dont-deploy T)
   (deploy:define-library glfw-x11
-    :dont-open T)
+    :dont-open T
+    :dont-deploy T)
   (deploy:define-library glfw-wayland
-    :dont-open T)
+    :dont-open T
+    :dont-deploy T)
+
+  (deploy:define-hook (:deploy copy-glfw) (directory)
+    (let ((path (deploy:library-path (deploy:ensure-library '%glfw::glfw)))
+          (target (make-pathname :name (if (deploy:env-set-p "WAYLAND_DISPLAY")
+                                           "libglfw-wayland"
+                                           "libglfw-x11")
+                                 :type "so"
+                                 :defaults directory)))
+      (unless (uiop:file-exists-p target)
+        (uiop:copy-file path target))))
 
   (deploy:define-hook (:boot load-glfw) ()
     (cond ((deploy:env-set-p "WAYLAND_DISPLAY")

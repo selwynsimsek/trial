@@ -6,17 +6,22 @@
 
 (in-package #:org.shirakumo.fraf.trial)
 
-(defclass display (renderable)
+(defclass display (render-loop)
   ((context :initarg :context :accessor context)
    (clear-color :initarg :clear-color :accessor clear-color))
   (:default-initargs
    :clear-color (vec 0.2 0.3 0.3)))
 
-(defmethod initialize-instance :after ((display display) &rest initargs &key context title width height version profile double-buffering stereo-buffer vsync)
-  (declare (ignore title width height version profile double-buffering stereo-buffer vsync))
+(defmethod initialize-instance :around ((display display) &key)
+  (with-cleanup-on-failure (when (context display)
+                             (finalize (context display)))
+    (call-next-method)))
+
+(defmethod initialize-instance :after ((display display) &rest initargs &key context title width height version profile double-buffering stereo-buffer vsync fullscreen)
+  (declare (ignore title width height version profile double-buffering stereo-buffer vsync fullscreen))
   (unless context
     (let ((args (loop for (k v) on initargs by #'cddr
-                      for keep = (find k '(:title :width :height :version :profile :double-buffering :stereo-buffer :vsync))
+                      for keep = (find k '(:title :width :height :version :profile :double-buffering :stereo-buffer :vsync :fullscreen))
                       when keep collect k when keep collect v)))
       (setf context (setf (context display) (apply #'make-context NIL args)))))
   (setf (handler context) display)
@@ -43,26 +48,20 @@
   (gl:front-face :ccw)
   (gl:cull-face :back)
   (gl:hint :line-smooth-hint :nicest)
+  (gl:pixel-store :unpack-alignment 1)
+  (with-vec (r g b a) (clear-color display)
+    (gl:clear-color r g b a))
   (enable :blend :multisample :cull-face :stencil-test :line-smooth :depth-test :depth-clamp))
-
-(defmethod paint (source (target display)))
 
 (defgeneric poll-input (target))
 
 (defmethod poll-input ((target display)))
-
-(defmethod render (source (target display))
-  (paint source target))
 
 (defmethod render :around (source (target display))
   ;; Potentially release context every time to allow
   ;; other threads to grab it.
   (let ((context (context target)))
     (with-context (context :reentrant T)
-      (gl:viewport 0 0 (width context) (height context))
-      (let ((c (clear-color target)))
-        (gl:clear-color (vx c) (vy c) (vz c) (if (vec4-p c) (vw c) 0.0)))
-      (gl:clear :color-buffer :depth-buffer :stencil-buffer)
       (call-next-method)
       (swap-buffers context))))
 

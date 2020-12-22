@@ -6,7 +6,7 @@
 
 (in-package #:org.shirakumo.fraf.trial.alloy)
 
-(defclass renderer (org.shirakumo.alloy.renderers.opengl.msdf:renderer trial:resource)
+(defclass renderer (org.shirakumo.alloy.renderers.opengl.msdf:renderer trial:renderable trial:resource)
   ())
 
 (defmethod org.shirakumo.alloy.renderers.opengl.msdf:fontcache-directory ((renderer renderer))
@@ -14,20 +14,26 @@
       (pathname-utils:subdirectory (deploy:data-directory) "pool" "font-cache")
       (call-next-method)))
 
-(deploy:define-hook (:deploy alloy) (directory)
-  (deploy:status 1 "Copying fonts")
-  (deploy:copy-directory-tree (org.shirakumo.alloy.renderers.opengl.msdf:fontcache-default-directory)
-                              (pathname-utils:subdirectory directory "pool" "font-cache")
-                              :copy-root NIL))
+(defmethod alloy:allocate ((renderer renderer)))
 
-(defmethod alloy:allocate ((renderer renderer))
-  (loop for res across (trial::topological-sort-by-dependencies
-                        (loop for v being the hash-values of (opengl::resources renderer)
-                              append (typecase v
-                                       (trial:shader-program
-                                        (list* v (trial:shaders v)))
-                                       (T (list v)))))
-        do (alloy:allocate res)))
+(defmethod trial:stage :before ((renderer renderer) (area trial:staging-area))
+  ;; FIXME: This is BAD, but Alloy gives us no way of generating the resource stubs.
+  (alloy:allocate renderer))
+
+(defmethod trial:stage ((tree alloy:layout-tree) (area trial:staging-area))
+  (trial:stage (alloy:root tree) area)
+  (trial:stage (alloy:popups tree) area))
+
+(defmethod trial:stage ((layout alloy:layout) (area trial:staging-area))
+  (alloy:do-elements (element layout)
+    (trial:stage element area)))
+
+(defmethod trial:stage ((structure alloy:structure) (area trial:staging-area))
+  (trial:stage (alloy:layout-element structure) area))
+
+(defmethod trial:dependencies ((renderer renderer))
+  (append (alexandria:hash-table-values (org.shirakumo.alloy.renderers.opengl.msdf:fontcache renderer))
+          (alexandria:hash-table-values (opengl::resources renderer))))
 
 (defmethod trial:allocate ((renderer renderer))
   (alloy:allocate renderer))
@@ -38,14 +44,18 @@
 (defmethod trial:deallocate ((renderer renderer))
   (alloy:deallocate renderer))
 
+(defmethod trial:compile-to-pass ((renderer renderer) (pass trial:scene-pass))
+  (when (trial:object-renderable-p renderer pass)
+    (trial::push-pass-action pass `(alloy:render ,renderer ,renderer))))
+
 (defmethod alloy:render :before ((renderer renderer) (ui alloy:ui))
   (let ((target (simple:transform-matrix renderer)))
-    (setf (aref target 0) (/ 2f0 (trial:width trial:*context*)))
+    (setf (aref target 0) (/ 2f0 (max 1 (trial:width trial:*context*))))
     (setf (aref target 1) 0f0)
     (setf (aref target 2) -1f0)
     
     (setf (aref target 3) 0f0)
-    (setf (aref target 4) (/ 2f0 (trial:height trial:*context*)))
+    (setf (aref target 4) (/ 2f0 (max 1 (trial:height trial:*context*))))
     (setf (aref target 5) -1f0)
 
     (setf (aref target 6) 0f0)
@@ -139,16 +149,13 @@
 (defmethod alloy:deallocate ((array trial:vertex-array))
   (trial:deallocate array))
 
-(defclass image (trial:image simple:image)
-  ())
-
-(defmethod simple:size ((image image))
+(defmethod simple:size ((image trial:texture))
   (alloy:px-size (trial:width image) (trial:height image)))
 
-(defmethod simple:data ((image image))
+(defmethod simple:data ((image trial:texture))
   (trial:pixel-data image))
 
-(defmethod simple:channels ((image image))
+(defmethod simple:channels ((image trial:texture))
   (ecase (trial:internal-format image)
     ((:red :r8) 1)
     ((:rg :rg8) 2)
@@ -156,7 +163,7 @@
     ((:rgba :rgba8) 4)))
 
 (defmethod simple:request-image ((renderer renderer) (image pathname) &key (filtering :linear))
-  (trial:load (make-instance 'image :input image :min-filter filtering :mag-filter filtering)))
+  (trial:generate-resources 'trial:image-loader image :min-filter filtering :mag-filter filtering))
 
 (defmethod alloy:allocate ((texture trial:texture))
   (trial:allocate texture))
@@ -171,4 +178,15 @@
 (defmethod simple:size ((image trial:image))
   (alloy:size (trial:width image) (trial:height image)))
 
-(defmethod trial:dependencies ((font simple:font)))
+(defmethod trial:dependencies ((font simple:font))
+  (list (org.shirakumo.alloy.renderers.opengl.msdf:atlas font)))
+
+(defmethod trial:stage :before ((font simple:font) (area trial:staging-area))
+  ;; FIXME: This is BAD, but Alloy gives us no way of generating the resource stubs.
+  (alloy:allocate font))
+
+(defmethod trial:stage ((object simple:font) (area trial:staging-area))
+  (setf (gethash object (trial:staged area)) (cons NIL NIL)))
+
+(defmethod trial:load-with (loader (object simple:font)))
+(defmethod trial:unload-with (loader (object simple:font)))

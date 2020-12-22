@@ -28,7 +28,7 @@
         do (when (framebuffer pass)
              (finalize (framebuffer pass))
              (setf (framebuffer pass) NIL))
-           (remove-handler pass pipeline))
+           (remove-listener pass pipeline))
   (setf (nodes pipeline) ())
   (setf (passes pipeline) #())
   (setf (textures pipeline) #())
@@ -56,16 +56,18 @@
             (eval-size (getf texspec :height)))))
 
 (defmethod resize ((pipeline pipeline) width height)
-  (loop for texture across (textures pipeline)
-        for texspec across (texspecs pipeline)
-        do (multiple-value-bind (width height) (texspec-real-size texspec width height)
-             (resize texture width height)))
-  (loop for pass across (passes pipeline)
-        for binding = (first (attachments (framebuffer pass)))
-        when binding ;; We have to do it like this to prevent updating FBOs with
-                     ;; texspecs that are not window-size.
-        do (setf (width pass) (setf (width (framebuffer pass)) (width (second binding))))
-           (setf (height pass) (setf (height (framebuffer pass)) (height (second binding))))))
+  (let ((width (max 1 width))
+        (height (max 1 height)))
+    (loop for texture across (textures pipeline)
+          for texspec across (texspecs pipeline)
+          do (multiple-value-bind (width height) (texspec-real-size texspec width height)
+               (resize texture width height)))
+    (loop for pass across (passes pipeline)
+          for binding = (first (attachments (framebuffer pass)))
+          when binding ;; We have to do it like this to prevent updating FBOs with
+                       ;; texspecs that are not window-size.
+          do (setf (width (framebuffer pass)) (width (second binding)))
+             (setf (height (framebuffer pass)) (height (second binding))))))
 
 (defmethod normalized-texspec ((texspec list))
   (assert (= 0 (getf texspec :level 0)))
@@ -100,7 +102,9 @@
                     :min-filter :nearest
                     :mag-filter :nearest))
              (T
-              (list :internal-format :rgba))))))
+              (list :internal-format :rgba
+                    :min-filter :linear
+                    :mag-filter :linear))))))
 
 (defun allocate-textures (passes textures texspec)
   (flet ((kind (port)
@@ -136,14 +140,22 @@
   (check-consistent pipeline)
   (v:info :trial.pipeline "~a packing for ~a (~ax~a)" pipeline target (width target) (height target))
   (let* ((passes (flow:topological-sort (nodes pipeline)))
-         (textures (make-array 0 :initial-element NIL :adjustable T)))
-    ;; Compute texture set
-    (let ((texspecs (loop for port in (mapcan #'flow:ports passes)
-                          when (and (typep port 'flow:out-port)
-                                    (typep port 'texture-port))
-                          collect (normalized-texspec port))))
-      (dolist (texspec (join-texspecs texspecs))
-        (allocate-textures passes textures texspec)))
+         (textures (make-array 0 :initial-element NIL :fill-pointer 0 :adjustable T)))
+    ;; Compute minimised texture set
+    ;; (let ((texspecs (loop for port in (mapcan #'flow:ports passes)
+    ;;                       when (and (typep port 'flow:out-port)
+    ;;                                 (typep port 'texture-port))
+    ;;                       collect (normalized-texspec port))))
+    ;;   (dolist (texspec (join-texspecs texspecs))
+    ;;     (allocate-textures passes textures texspec)))
+    ;; Compute full texture set
+    (loop for port in (mapcan #'flow:ports passes)
+          for texture = (apply #'make-instance 'texture (normalized-texspec port))
+          when (typep port '(and flow:out-port texture-port))
+          do (setf (texture port) texture)
+             (dolist (connection (flow:connections port))
+               (setf (texture (flow:right connection)) texture))
+             (vector-push-extend texture textures))
     ;; Extract texspecs
     (let ((texspecs (make-array (length textures))))
       (loop for i from 0 below (length textures)
@@ -156,13 +168,13 @@
       ;; Compute frame buffers
       (dolist (pass passes)
         (when (typep pipeline 'event-loop)
-          (add-handler pass pipeline))
+          (add-listener pass pipeline))
         (let ((output (loop for port in (flow:ports pass)
                             do (when (and (typep port 'output)
                                           (eql :color-attachment0 (attachment port)))
                                  (return port)))))
           (flet ((dimension (func)
-                   (or (funcall func pass) (funcall func (texture output)))))
+                   (funcall func (texture output))))
             (setf (framebuffer pass)
                   (make-instance 'framebuffer
                                  :width (dimension #'width)
@@ -170,6 +182,9 @@
                                  :attachments (loop for port in (flow:ports pass)
                                                     when (typep port 'output)
                                                     collect (list (attachment port) (texture port))))))))
+      ;; Now re-set the activation to short-modify the pipeline as necessary.
+      (dolist (pass passes)
+        (setf (active-p pass) (active-p pass)))
       ;; All done.
       (v:info :trial.pipeline "~a pass order: ~a" pipeline passes)
       (v:info :trial.pipeline "~a texture count: ~a" pipeline (length textures))
@@ -177,23 +192,46 @@
               (loop for pass in passes
                     collect (list pass (loop for port in (flow:ports pass)
                                              collect (list (flow:name port) (texture port))))))
-      
       ;; FIXME: Replace textures with existing ones if they match to save on re-allocation.
-      ;; FIXME: When transitioning between scenes we should try to re-use existing textures and fbos to reduce the amount of unnecessary allocation.
+      ;; FIXME: When transitioning between scenes we should try to re-use existing textures
+      ;;        and fbos to reduce the amount of unnecessary allocation. This is separate
+      ;;        from the previous issue as the scenes typically have separate pipelines.
       (clear-pipeline pipeline)
       (setf (passes pipeline) (coerce passes 'vector))
       (setf (textures pipeline) textures)
       (setf (texspecs pipeline) texspecs))))
 
-(defmethod paint-with ((pipeline pipeline) source)
+(defmethod render ((pipeline pipeline) target)
   (loop for pass across (passes pipeline)
-        do (activate (framebuffer pass))
-           (paint-with pass source)))
+        do (when (active-p pass)
+             (render pass target))))
+
+(defmethod blit-to-screen ((pipeline pipeline))
+  (let ((passes (passes pipeline)))
+    (loop for i downfrom (1- (length passes)) to 0
+          for pass = (aref passes i)
+          do (when (active-p pass)
+               (blit-to-screen pass)
+               (return)))))
 
 (defmethod register-object-for-pass ((pipeline pipeline) object)
   (loop for pass across (passes pipeline)
         do (register-object-for-pass pass object)))
 
-(defmethod compute-resources ((pipeline pipeline) resources readying cache)
-  (compute-resources (passes pipeline) resources readying cache)
-  (compute-resources (textures pipeline) resources readying cache))
+(defmethod compile-to-pass (object (pipeline pipeline))
+  (loop for pass across (passes pipeline)
+        do (compile-to-pass object pass)))
+
+(defmethod compile-into-pass (object container (pipeline pipeline))
+  (loop for pass across (passes pipeline)
+        do (compile-into-pass object container pass)))
+
+(defmethod remove-from-pass (object (pipeline pipeline))
+  (loop for pass across (passes pipeline)
+        do (remove-from-pass object pass)))
+
+(defmethod stage ((pipeline pipeline) (area staging-area))
+  (loop for texture across (textures pipeline)
+        do (stage texture area))
+  (loop for pass across (passes pipeline)
+        do (stage pass area)))

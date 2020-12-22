@@ -10,17 +10,16 @@
   ((line-width :initarg :line-width :initform 3.0 :accessor line-width))
   (:inhibit-shaders (vertex-entity :vertex-shader)))
 
-(defmethod initialize-instance :after ((lines lines) &key vertex-array)
+(defmethod initialize-instance :after ((lines lines) &key vertex-array points)
   (unless vertex-array
-    (setf (vertex-array lines) (change-class (make-lines ()) 'vertex-array :data-usage :dynamic-draw))))
+    (setf (vertex-array lines) (generate-resources 'mesh-loader (make-lines points) :data-usage :dynamic-draw))))
 
 (defmethod replace-vertex-data ((lines lines) points &key (update T) (default-color (vec 0 0 0 1)))
   (replace-vertex-data (vertex-array lines) (make-lines points :default-color default-color) :update update))
 
-(defmethod paint :before ((lines lines) (target shader-pass))
-  (let ((program (shader-program-for-pass target lines)))
-    (setf (uniform program "line_width") (float (line-width lines)))
-    (setf (uniform program "view_size") (vec (width *context*) (height *context*)))))
+(defmethod render :before ((lines lines) (program shader-program))
+  (setf (uniform program "line_width") (float (line-width lines)))
+  (setf (uniform program "view_size") (vec (width *context*) (height *context*))))
 
 (define-class-shader (lines :vertex-shader)
   "layout(location = 0) in vec3 position;
@@ -46,7 +45,7 @@ void main(){
   clip2.x *= aspect;
   line_normal = normalize(clip2 - clip1);
   line_normal = vec2(-line_normal.y, line_normal.x);
-  gl_Position = screen1 + screen1.w * vec4(line_normal*line_width/view_size, 0, 0);
+  gl_Position = screen1 + screen1.w * vec4(line_normal*line_width/view_size, 10, 0);
   line_color = color;
 }")
 

@@ -24,85 +24,83 @@
   :source-control (:git "https://github.com/Shirakumo/trial.git")
   :components ((:file "package")
                (:file "array-container" :depends-on ("package"))
-               (:file "asset" :depends-on ("package" "toolkit" "resource" "context"))
+               (:file "asset" :depends-on ("package" "toolkit" "resource" "resource-generator"))
                (:file "asset-pool" :depends-on ("package" "asset"))
                (:file "attributes" :depends-on ("package"))
-               (:file "camera" :depends-on ("package" "subject" "helpers"))
+               (:file "camera" :depends-on ("package" "entity" "helpers" "input"))
                (:file "context" :depends-on ("package"))
-               (:file "controller" :depends-on ("package" "mapping" "input" "subject" "asset" "text"))
+               (:file "controller" :depends-on ("package" "mapping" "input" "entity" "asset" ("assets" "font")))
                (:file "data-pointer" :depends-on ("package" "type-info" "static-vector"))
-               (:file "deferred" :depends-on ("package" "shader-entity" "shader-pass" "helpers" ("assets" "uniform-buffer")))
+               (:file "deferred" :depends-on ("package" "shader-entity" "shader-pass" "helpers" ("resources" "uniform-buffer") ("assets" "static")))
                (:file "deploy" :depends-on ("package" "gamepad"))
-               (:file "display" :depends-on ("package" "context" "renderable"))
+               (:file "display" :depends-on ("package" "context" "render-loop"))
                (:file "effects" :depends-on ("package" "shader-pass"))
                (:file "entity" :depends-on ("package"))
                (:file "event-loop" :depends-on ("package" "entity"))
                (:file "features" :depends-on ("package"))
                (:file "flare" :depends-on ("package" "transforms"))
+               (:file "fps" :depends-on ("package" ("assets" "image") ("assets" "mesh") "loader"))
                ;;(:file "fullscreenable" :depends-on ("package" "display"))
                (:file "gamepad" :depends-on ("package" "event-loop" "toolkit"))
-               (:file "geometry" :depends-on ("package" "toolkit" "type-info" "static-vector" ("assets" "vertex-array")))
-               (:file "geometry-clipmap" :depends-on ("package" "geometry-shapes" "shader-subject"))
+               (:file "geometry" :depends-on ("package" "toolkit" "type-info" "static-vector" ("resources" "vertex-array") ("resources" "vertex-buffer")))
+               (:file "geometry-clipmap" :depends-on ("package" "geometry-shapes" "shader-entity"))
                (:file "geometry-shapes" :depends-on ("package" "geometry" "asset-pool" ("assets" "mesh")))
                (:file "gl-struct" :depends-on ("package" "type-info"))
-               (:file "helpers" :depends-on ("package" "entity" "transforms" "shader-subject" "shader-pass" "asset" "resources"))
+               (:file "helpers" :depends-on ("package" "entity" "transforms" "shader-entity" "shader-pass" "asset" "resources" "loader"))
                (:file "hdr" :depends-on ("package" "shader-pass"))
-               (:file "input" :depends-on ("package" "event-loop" "retention"))
+               (:file "input" :depends-on ("package" "event-loop" "mapping"))
                (:file "lines" :depends-on ("package" "helpers" "shader-entity" "geometry"))
-               (:file "layer-set" :depends-on ("package"))
-               (:file "loader" :depends-on ("package" "scene" "resource"))
+               (:file "layered-container" :depends-on ("package" "entity"))
+               (:file "loader" :depends-on ("package" "resource" "asset"))
                (:file "main" :depends-on ("package" "display" "toolkit" "scene" "pipeline" "window"))
-               (:file "particle" :depends-on ("package" "shader-subject" "resources"))
+               (:file "particle" :depends-on ("package" "shader-entity" "resources"))
                (:file "mapping" :depends-on ("package" "event-loop" "toolkit"))
                (:file "phong" :depends-on ("package" "helpers"))
                (:file "pipeline" :depends-on ("package" "event-loop" "toolkit"))
                (:file "pipelined-scene" :depends-on ("package" "pipeline" "scene" "loader"))
-               (:file "prompt" :depends-on ("package" "text"))
-               (:file "rails" :depends-on ("package" "subject" "helpers"))
+               (:file "prompt" :depends-on ("package"))
+               (:file "rails" :depends-on ("package" "entity" "helpers"))
+               (:file "render-loop" :depends-on ("package" "toolkit"))
                (:file "render-texture" :depends-on ("package" "pipeline" "entity"))
-               (:file "renderable" :depends-on ("package" "toolkit"))
                (:file "resource" :depends-on ("package" "context"))
-               (:file "retention" :depends-on ("package" "event-loop"))
+               (:file "resource-generator" :depends-on ("package"))
                (:file "scene-buffer" :depends-on ("package" "scene" "render-texture"))
                (:file "scene" :depends-on ("package" "event-loop" "entity"))
                (:file "selection-buffer" :depends-on ("package" "render-texture" "scene" "effects" "loader"))
-               (:file "shader-entity" :depends-on ("package" "entity"))
-               (:file "shader-pass" :depends-on ("package" "shader-subject" "resource" ("resources" "framebuffer") "scene" "loader" "context"))
-               (:file "shader-subject" :depends-on ("package" "shader-entity" "subject"))
+               (:file "shader-entity" :depends-on ("package" "entity" "event-loop" "loader"))
+               (:file "shader-pass" :depends-on ("package" "shader-entity" "resource" ("resources" "framebuffer") ("resources" "shader-program") "scene" "loader" "context" "geometry-shapes"))
                (:file "shadow-map" :depends-on ("package" "shader-pass" "transforms"))
-               (:file "skybox" :depends-on ("package" "shader-subject" "transforms"))
-               (:file "sprite" :depends-on ("package" "shader-subject" "helpers"))
+               (:file "skybox" :depends-on ("package" "shader-entity" "transforms"))
+               (:file "sprite" :depends-on ("package" "shader-entity" "helpers" ("assets" "sprite-data")))
                (:file "ssao" :depends-on ("package" "shader-pass" "transforms"))
                (:file "static-vector" :depends-on ("package"))
-               (:file "subject" :depends-on ("package" "event-loop"))
-               (:file "text" :depends-on ("package" "shader-entity" "helpers" ("assets" "font")))
                (:file "toolkit" :depends-on ("package"))
                (:file "transforms" :depends-on ("package"))
                (:file "type-info" :depends-on ("package" "toolkit"))
                (:file "window" :depends-on ("package"))
-               ;; Testing, remove for production.
-               (:file "workbench" :depends-on ("assets" "asset-pool" "formats" "main" "helpers"))
                (:module "resources"
                 :depends-on ("package" "resource" "toolkit" "data-pointer")
                 :components ((:file "buffer-object")
                              (:file "framebuffer")
                              (:file "shader-program")
                              (:file "shader")
+                             (:file "struct-buffer" :depends-on ("buffer-object" (:.. "gl-struct")))
                              (:file "texture")
+                             (:file "uniform-buffer" :depends-on ("struct-buffer"))
                              (:file "vertex-array")
-                             (:file "vertex-buffer" :depends-on ("buffer-object"))))
+                             (:file "vertex-buffer" :depends-on ("buffer-object"))
+                             (:file "vertex-struct-buffer" :depends-on ("struct-buffer"))))
                (:module "assets"
                 :depends-on ("package" "asset" "resources" "data-pointer")
-                :components ((:file "font")
-                             (:file "image")
+                :components ((:file "image")
                              (:file "mesh")
-                             (:file "struct-buffer" :depends-on ((:.. "gl-struct")))
-                             (:file "uniform-buffer" :depends-on ("struct-buffer"))
-                             (:file "vertex-struct-buffer" :depends-on ("struct-buffer"))))
+                             (:file "sprite-data" :depends-on ("image"))
+                             (:file "static")
+                             (:file "uniform-block")))
                (:module "formats"
                 :depends-on ("package" "geometry" "static-vector")
-                :components ((:file "vertex-format")
-                             (:file "collada"))))
+                :components ((:file "collada")
+                             (:file "vertex-format"))))
   :depends-on (:alexandria
                :3d-vectors
                :3d-matrices
@@ -114,7 +112,6 @@
                :bordeaux-threads
                :cl-opengl
                :cl-gamepad
-               :cl-fond
                :cl-ppcre
                :pathname-utils
                :flare
@@ -126,14 +123,17 @@
                :float-features
                :lquery
                :static-vectors
-               :pngload-fast
+               :pngload
                :cl-tga
                :cl-jpeg
                :retrospectiff
                :terrable
                :mmap
+               :messagebox
                :form-fiddle
-               :lambda-fiddle))
+               :lambda-fiddle
+               :jsown
+               :zpng))
 
-;; FIXME: factor out dependencies into systems
-;;        like for image, model formats, etc.
+;; TODO: factor out dependencies into systems
+;;       like for image, model formats, etc.

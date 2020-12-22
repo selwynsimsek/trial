@@ -9,48 +9,18 @@
 ;; FIXME: get rid of this shit or at least find a better way to do this stuff.
 (defvar *scene*)
 
-(defclass scene (flare:scene event-loop entity)
+(defclass scene (flare:scene event-loop)
   ())
 
-(defclass scene-event (event)
-  ((scene :initarg :scene :accessor scene)))
-
-(defclass enter (scene-event)
-  ((entity :initarg :entity :accessor entity)))
-
-(defmethod print-object ((enter enter) stream)
-  (print-unreadable-object (enter stream :type T)
-    (format stream "~a => ~a" (entity enter) (scene enter))))
-
-(defclass leave (scene-event)
-  ((entity :initarg :entity :accessor entity)))
-
-(defmethod print-object ((leave leave) stream)
-  (print-unreadable-object (leave stream :type T)
-    (format stream "~a => ~a" (scene leave) (entity leave))))
-
-(defmethod register :after ((entity entity) (scene scene))
-  (issue scene 'enter :scene scene :entity entity))
-
-(defmethod deregister :after ((entity entity) (scene scene))
-  (issue scene 'leave :scene scene :entity entity))
-
-(defmethod register :after ((container handler-container) (scene scene))
-  (add-handler container scene))
+(defmethod register :after ((listener listener) (scene scene))
+  (add-listener listener scene))
 
 (defmethod deregister :after (thing (scene scene))
-  (remove-handler thing scene))
-
-(defmethod paint :around ((scene scene) target)
-  (let ((*scene* scene))
-    (call-next-method)))
+  (remove-listener thing scene))
 
 (defmethod process :around ((scene scene))
   (let ((*scene* scene))
     (call-next-method)))
-
-(defmethod banned-slots append ((object scene))
-  '(queue handlers))
 
 ;; Since we have a tick event, we don't want to dupe that here.
 ;; animations and clock update are already handled by the method

@@ -33,7 +33,8 @@
        (setf (ldb (byte 8 24) id) (aref color 0))
        id))))
 
-(defclass selection-buffer (render-texture bakable)
+;; FIXME: redo this all for the new systems
+(defclass selection-buffer (render-texture)
   ((scene :initarg :scene :accessor scene)
    (color->object-map :initform (make-hash-table :test 'eql) :accessor color->object-map))
   (:default-initargs
@@ -43,15 +44,10 @@
 
 (defmethod initialize-instance :after ((buffer selection-buffer) &key scene)
   (enter (make-instance 'selection-buffer-pass) buffer)
-  (add-handler buffer scene))
-
-(defmethod bake ((buffer selection-buffer))
-  (pack buffer)
-  (for:for ((object over (scene buffer)))
-    (register-object-for-pass buffer object)))
+  (add-listener buffer scene))
 
 (defmethod finalize :after ((buffer selection-buffer))
-  (remove-handler buffer (scene buffer)))
+  (remove-listener buffer (scene buffer)))
 
 (defmethod object-at-point ((point vec2) (buffer selection-buffer))
   (color->object (gl:read-pixels (round (vx point)) (round (vy point)) 1 1 :rgba :unsigned-byte)
@@ -76,24 +72,15 @@
         (height buffer) (height resize))
   (resize buffer (width resize) (height resize)))
 
-(defmethod handle ((enter enter) (buffer selection-buffer))
-  (let ((entity (entity enter)))
-    (when (typep entity 'selectable)
-      (register-object-for-pass (aref (passes buffer) 0) entity))))
+;; FIXME: How do we do this stuff with the new system?
+;; (defmethod render ((source selection-buffer) (buffer selection-buffer))
+;;   (paint-with buffer (scene source))
+;;   (gl:bind-framebuffer :draw-framebuffer 0)
+;;   (%gl:blit-framebuffer 0 0 (width source) (height source) 0 0 (width source) (height source)
+;;                         (cffi:foreign-bitfield-value '%gl::ClearBufferMask :color-buffer)
+;;                         (cffi:foreign-enum-value '%gl:enum :nearest)))
 
-(defmethod handle ((leave leave) (buffer selection-buffer))
-  (let ((entity (entity leave)))
-    (when (typep entity 'selectable)
-      (setf (color->object (selection-color entity) buffer) NIL))))
-
-(defmethod paint ((source selection-buffer) (buffer selection-buffer))
-  (paint-with buffer (scene source))
-  (gl:bind-framebuffer :draw-framebuffer 0)
-  (%gl:blit-framebuffer 0 0 (width source) (height source) 0 0 (width source) (height source)
-                        (cffi:foreign-bitfield-value '%gl::ClearBufferMask :color-buffer)
-                        (cffi:foreign-enum-value '%gl:enum :nearest)))
-
-(defmethod paint-with :around ((buffer selection-buffer) thing)
+(defmethod render :around ((buffer selection-buffer) thing)
   (with-pushed-attribs
     (disable :blend)
     (call-next-method)))
@@ -109,7 +96,7 @@ void main(){
   color = selection_color;
 }")
 
-(define-shader-entity selectable ()
+(define-shader-entity selectable (renderable)
   ((selection-color :initarg :selection-color :initform (find-new-selection-color) :accessor selection-color)))
 
 (defun find-new-selection-color ()
@@ -119,14 +106,11 @@ void main(){
           (/ (ldb (byte 8 8) num) 255.0)
           (/ (ldb (byte 8 0) num) 255.0))))
 
-(defmethod paint :around ((entity entity) (pass selection-buffer-pass))
-  (when (or (typep entity 'selectable)
-            (typep entity 'container))
-    (call-next-method)))
+(defmethod object-renderable-p ((renderable renderable) (pass selection-buffer-pass))
+  (typep renderable 'selectable))
 
-(defmethod paint :before ((entity selectable) (pass selection-buffer-pass))
-  (let ((shader (shader-program-for-pass pass entity)))
-    (setf (uniform shader "selection_color") (selection-color entity))))
+(defmethod render :before ((entity selectable) (shader shader-program))
+  (setf (uniform shader "selection_color") (selection-color entity)))
 
 (defmethod register-object-for-pass :after ((buffer selection-buffer) (selectable selectable))
   (setf (color->object (selection-color selectable) buffer) selectable))

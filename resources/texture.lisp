@@ -51,7 +51,7 @@
                       mag-filter min-filter mipmap-levels mipmap-lod
                       anisotropy wrapping border-color storage)
         when (slot-boundp texture slot)
-        collect (intern (string slot) "KEYWORD")
+        collect (kw slot)
         and collect (slot-value texture slot)))
 
 (defmethod shared-initialize :around ((texture texture) slots &rest args)
@@ -101,11 +101,7 @@
        (format stream "~ax~ax~a" (width texture) (height texture) (depth texture))))
     (format stream " ~a" (internal-format texture))))
 
-(defmethod destructor ((texture texture))
-  (let ((tex (gl-name texture)))
-    (lambda () (when tex (gl:delete-textures (list tex))))))
-
-(defmacro with-pixel-data-pointer ((ptr data) &body body)
+(defmacro with-pixel-data-pointer ((ptr data element-type) &body body)
   (let ((datag (gensym "DATA")))
     `(let ((,datag ,data))
        (flet ((thunk (,ptr) () ,@body))
@@ -117,22 +113,23 @@
            (vector
             (if (static-vector-p ,datag)
                 (thunk (static-vectors:static-vector-pointer ,datag))
-                (with-pointer-to-vector-data (,ptr ,datag)
+                (with-pointer-to-vector-data (,ptr ,datag ,element-type)
                   (thunk ,ptr)))))))))
 
 (defun allocate-texture-storage (texture)
-  (with-accessors* (target storage levels internal-format width height depth
-                           samples pixel-format pixel-type pixel-data) texture
-    (let ((internal-format (cffi:foreign-enum-value '%gl:enum internal-format)))
+  (with-accessor-values (target storage levels internal-format width height depth
+                                samples pixel-format pixel-type pixel-data) texture
+    (let ((internal-format (cffi:foreign-enum-value '%gl:enum internal-format))
+          (pixel-element-type (pixel-type->cl-type pixel-type)))
       ;; FIXME: Handle array cases better, factor this out into an update routine.
       (case target
         ((:texture-1d)
-         (with-pixel-data-pointer (ptr pixel-data)
+         (with-pixel-data-pointer (ptr pixel-data pixel-element-type)
            (ecase storage
              (:dynamic (%gl:tex-image-1d target 0 internal-format width 0 pixel-format pixel-type ptr))
              (:static (%gl:tex-storage-1d target levels internal-format width)))))
         ((:texture-2d :texture-1d-array)
-         (with-pixel-data-pointer (ptr pixel-data)
+         (with-pixel-data-pointer (ptr pixel-data pixel-element-type)
            (ecase storage
              (:dynamic (%gl:tex-image-2d target 0 internal-format width height 0 pixel-format pixel-type ptr))
              (:static (%gl:tex-storage-2d target levels internal-format width height)))))
@@ -144,7 +141,7 @@
                                pixel-data
                                (let ((c (cons pixel-data NIL)))
                                  (setf (cdr c) c)))
-               do (with-pixel-data-pointer (ptr data)
+               do (with-pixel-data-pointer (ptr data pixel-element-type)
                     (ecase storage
                       (:dynamic (%gl:tex-image-2d target 0 internal-format width height 0 pixel-format pixel-type ptr))
                       (:static (%gl:tex-storage-2d target levels internal-format width height))))))
@@ -156,10 +153,10 @@
            (list
             (loop for z from 0
                   for data in pixel-data
-                  do (with-pixel-data-pointer (ptr data)
+                  do (with-pixel-data-pointer (ptr data pixel-element-type)
                        (%gl:tex-sub-image-3d target 0 0 0 z width height 1 pixel-format pixel-type ptr))))
            ((not null)
-            (with-pixel-data-pointer (ptr pixel-data)
+            (with-pixel-data-pointer (ptr pixel-data pixel-element-type)
               (%gl:tex-sub-image-3d target 0 0 0 0 width height depth pixel-format pixel-type ptr)))))
         ((:texture-2d-multisample)
          (%gl:tex-storage-2d-multisample target samples internal-format width height 1))
@@ -201,6 +198,13 @@
         (gl:bind-texture target 0)
         (setf (data-pointer texture) tex)))))
 
+(defmethod deallocate ((texture texture))
+  (gl:delete-textures (list (gl-name texture))))
+
+(defmethod unload ((texture texture))
+  (maybe-free-static-vector (pixel-data texture))
+  (setf (pixel-data texture) NIL))
+
 (defmethod resize ((texture texture) width height)
   (when (or (/= width (width texture))
             (/= height (height texture)))
@@ -232,8 +236,8 @@
   (cl-ppcre:register-groups-bind (compression signed super r r-size r-type g g-size g-type b b-size b-type rg rg-size rg-type rgb rgb-size rgb-type rgba rgba-size rgba-type a a-size a-type e e-size d d-size d-type s s-size s-type rgtc bptc floatage snorm unorm) ("^(compressed-)?(signed-)?(s)?((?:red|r)(\\d+)?(ui|i|f)?)?(-g(\\d+)?(ui|i|f)?)?(-b(\\d+)?(ui|i|f)?)?(rg(\\d+)?(ui|i|f)?)?(rgb(\\d+)?(ui|i|f)?)?(rgba(\\d+)?(ui|i|f)?)?(-(?:a|alpha)(\\d+)?(ui|i|f)?)?(-e(\\d+)?)?(depth(?:-component-?)?(\\d+)?(f)?)?(-stencil(\\d+)?(ui|i|f)?)?(-rgtc\\d)?(-bptc)?(-signed-float|-unsigned-float)?(-snorm)?(-unorm)?$" (string-downcase format))
     (macrolet ((parse-part (part)
                  (let* ((*print-case* (readtable-case *readtable*))
-                        (type (intern (format NIL "~a-~a" part 'type)))
-                        (size (intern (format NIL "~a-~a" part 'size))))
+                        (type (mksym *package* part "-" 'type))
+                        (size (mksym *package* part "-" 'size)))
                    `(when ,part
                       (list (when ,size (parse-integer ,size))
                             (cond ((or (equalp ,type "f") floatage) :float)
@@ -355,6 +359,8 @@
          (max* (a b)
            (cond ((and a b) (max a b)) (a a) (b b))))
     (when (and (same :target)
+               (same :width)
+               (same :height)
                (same :pixel-type)
                (same :pixel-data)
                (same :mag-filter)

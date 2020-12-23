@@ -197,5 +197,11 @@
 
 (defmethod shared-initialize :after ((asset file-input-asset) slots &key &allow-other-keys)
   (let ((file (input* asset)))
-    (unless (probe-file file)
-      (alexandria:simple-style-warning "Input file~% ~s~%for asset~%  ~s~%does not exist." file asset))))
+    (if (and (listp file) (list-length file))
+        (map 'nil (lambda (g)
+                    (unless (probe-file g)
+                      (alexandria:simple-style-warning "Input file~% ~s~%for asset~%  ~s~%does not exist."
+                                                       file asset)) )
+             file)
+        (unless (probe-file file)
+          (alexandria:simple-style-warning "Input file~% ~s~%for asset~%  ~s~%does not exist." file asset)))))

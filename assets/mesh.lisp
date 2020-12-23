@@ -40,7 +40,8 @@
                                       (ecase (face-length mesh)
                                         (1 :points)
                                         (2 :lines)
-                                        (3 :triangles))))))
+                                        (3 :triangles)
+                                        (4 :triangles))))))
 
 (defmethod generate-resources ((generator mesh-loader) (path pathname) &key (format T))
   (let ((meshes (meshes (read-geometry path format))))
